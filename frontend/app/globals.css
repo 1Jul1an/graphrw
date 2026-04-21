@@ -1,0 +1,131 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-slate-75 text-slate-900 antialiased transition-colors;
+    background-image:
+      radial-gradient(circle at top, rgba(72, 116, 204, 0.06), transparent 26%),
+      linear-gradient(to bottom, rgba(255, 255, 255, 0.84), rgba(255, 255, 255, 0.84));
+  }
+
+  html.dark body {
+    background-color: #18191b;
+    color: #f5f7fa;
+    background-image:
+      radial-gradient(circle at top, rgba(110, 132, 168, 0.12), transparent 26%),
+      linear-gradient(to bottom, rgba(24, 25, 27, 0.96), rgba(24, 25, 27, 0.98));
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+
+  a {
+    @apply text-inherit no-underline;
+  }
+
+  input,
+  button,
+  textarea,
+  select {
+    font: inherit;
+  }
+
+  ::selection {
+    @apply bg-brand-100 text-slate-900;
+  }
+}
+
+@layer components {
+  .docs-card {
+    @apply rounded-2xl border shadow-panel backdrop-blur-md;
+    border-color: rgba(204, 215, 230, 0.95);
+    background-color: rgba(255, 255, 255, 0.88);
+  }
+
+  .docs-subtle {
+    @apply rounded-2xl border backdrop-blur-md;
+    border-color: rgba(204, 215, 230, 0.95);
+    background-color: rgba(251, 252, 254, 0.9);
+  }
+
+  .docs-table {
+    @apply w-full min-w-[480px] border-separate border-spacing-0 text-sm;
+  }
+
+  .docs-table thead th {
+    @apply sticky top-0 border-b border-slate-250 bg-slate-75 px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500;
+  }
+
+  .docs-table tbody td {
+    @apply border-b border-slate-150 px-4 py-3 align-top text-slate-700;
+  }
+
+  .docs-table tbody tr:last-child td {
+    @apply border-b-0;
+  }
+
+  .cy-shell {
+    @apply h-[460px] overflow-hidden rounded-2xl border;
+    border-color: rgba(204, 215, 230, 0.95);
+    background-color: rgba(255, 255, 255, 0.92);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.75);
+  }
+
+  .cy-shell > div {
+    width: 100%;
+    height: 100%;
+  }
+
+  .cy-empty {
+    @apply flex h-[460px] items-center justify-center rounded-2xl border border-dashed border-slate-250 bg-slate-25 px-6 text-sm text-slate-500;
+  }
+
+  html.dark .docs-card {
+    border-color: #51565d;
+    background-color: rgba(33, 36, 38, 0.92);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 18px 40px rgba(0, 0, 0, 0.24);
+  }
+
+  html.dark .docs-subtle {
+    border-color: #51565d;
+    background-color: rgba(33, 36, 38, 0.84);
+  }
+
+  html.dark .docs-table thead th {
+    border-color: #51565d;
+    background-color: #212426;
+    color: #b7bec6;
+  }
+
+  html.dark .docs-table tbody td {
+    border-color: #51565d;
+    color: #d7dde4;
+  }
+
+  html.dark .cy-shell {
+    border-color: #51565d;
+    background-color: rgba(33, 36, 38, 0.96);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  html.dark .cy-empty {
+    border-color: #51565d;
+    background-color: #212426;
+    color: #b7bec6;
+  }
+}
