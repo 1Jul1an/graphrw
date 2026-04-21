@@ -15,3 +15,7 @@
 /backend/app/__pycache__/
 /backend/app/migrations/__pycache__/
 /backend/tests/__pycache__/
+/data/
+/backend/data/
+/**/data/
+*.tsbuildinfo
