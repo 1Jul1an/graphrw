@@ -11,3 +11,7 @@
 /frontend/dist/
 /frontend/.cache/
 /frontend/.next/
+/backend/.vscode/
+/backend/app/__pycache__/
+/backend/app/migrations/__pycache__/
+/backend/tests/__pycache__/
