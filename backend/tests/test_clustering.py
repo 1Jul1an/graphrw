@@ -1,4 +1,4 @@
-from app.analysis import _cluster_from_pair_items
+from app.analysis import _cluster_from_pair_items, _graph_support_fallback_clusters
 
 
 def test_hdbscan_precomputed_finds_clusters_and_noise() -> None:
@@ -53,17 +53,32 @@ def test_hdbscan_precomputed_finds_clusters_and_noise() -> None:
     assert any(item["submission_id"] == "f" for item in payload["noise"])
 
 
-def test_clusters_include_colors_in_payload() -> None:
-    submission_lookup = {"solo": "Solo"}
+def test_graph_support_fallback_recovers_small_dense_component() -> None:
+    submission_lookup = {"a": "A", "b": "B", "c": "C", "d": "D"}
+    pair_items = [
+        {"submission_i": "a", "submission_j": "b", "relation_cal": 0.91, "relation_raw": 0.91},
+        {"submission_i": "a", "submission_j": "c", "relation_cal": 0.89, "relation_raw": 0.89},
+        {"submission_i": "b", "submission_j": "c", "relation_cal": 0.90, "relation_raw": 0.90},
+        {"submission_i": "a", "submission_j": "d", "relation_cal": 0.12, "relation_raw": 0.12},
+        {"submission_i": "b", "submission_j": "d", "relation_cal": 0.10, "relation_raw": 0.10},
+        {"submission_i": "c", "submission_j": "d", "relation_cal": 0.09, "relation_raw": 0.09},
+    ]
+    edges = [
+        {"submission_src": "a", "submission_dst": "b", "relation_cal": 0.91, "relation_raw": 0.91, "is_mutual": True, "shared_neighbor_count": 1},
+        {"submission_src": "a", "submission_dst": "c", "relation_cal": 0.89, "relation_raw": 0.89, "is_mutual": True, "shared_neighbor_count": 1},
+        {"submission_src": "b", "submission_dst": "c", "relation_cal": 0.90, "relation_raw": 0.90, "is_mutual": True, "shared_neighbor_count": 1},
+    ]
 
-    payload = _cluster_from_pair_items(
-        run_id="run_1",
+    payload = _graph_support_fallback_clusters(
+        run_id="run_x",
         space="expr",
         submission_lookup=submission_lookup,
-        pair_items=[],
-        edges=[],
+        edges=edges,
+        pair_items=pair_items,
     )
 
-    assert payload["clusters"][0]["cluster_id"] == "c1"
-    assert payload["clusters"][0]["color"].startswith("#")
-    assert payload["clusters"][0]["border_color"].startswith("#")
+    assert payload is not None
+    assert payload["method"] == "graph_support_components"
+    assert len(payload["clusters"]) == 1
+    assert {member["submission_id"] for member in payload["clusters"][0]["members"]} == {"a", "b", "c"}
+    assert any(item["submission_id"] == "d" for item in payload["noise"])

@@ -7,15 +7,41 @@ export type RunPayload = {
   pipeline_status?: Record<string, string>;
 };
 
+export type ClusterLegendItem = {
+  cluster_id?: string | null;
+  label: string;
+  size: number;
+  color: string;
+  border_color: string;
+  is_noise?: boolean;
+};
+
 export type GraphPayload = {
   nodes: {
     submission_id: string;
     label: string;
     cluster_id?: string | null;
+    cluster_label?: string | null;
+    cluster_size?: number | null;
     cluster_probability?: number | null;
+    cluster_color?: string | null;
+    cluster_border_color?: string | null;
     is_noise?: boolean;
   }[];
-  edges: { source: string; target: string; weight: number; edge_type: string }[];
+  edges: { source: string; target: string; weight: number; raw_weight?: number; edge_type: string; shared_neighbor_count?: number; support_count?: number | null }[];
+  cluster_legend?: ClusterLegendItem[];
+  meta?: {
+    k?: number;
+    construction?: string;
+    neighbor_strategy?: string;
+    similarity_floor?: number;
+    pair_count?: number;
+    similarity_stats?: { count?: number; min?: number; max?: number; mean?: number; p10?: number; p25?: number; p50?: number; p75?: number; p90?: number; histogram?: { label: string; count: number }[] };
+    degree_stats?: { min?: number; max?: number; mean?: number; isolated_count?: number };
+    cluster_meta?: { cluster_count?: number; noise_count?: number; [key: string]: unknown };
+    neighbor_meta?: { local_floor_mean?: number; local_floor_min?: number; local_floor_max?: number; max_neighbors_per_node?: number };
+    [key: string]: unknown;
+  };
 };
 
 export type SubmissionDetail = {
@@ -23,44 +49,10 @@ export type SubmissionDetail = {
     submission_id: string;
     submission_name: string;
     ingestion_status: string;
-    stats?: {
-      relevant_java_file_count?: number;
-      ignored_entry_count?: number;
-      parseable_file_count?: number;
-      empty_submission?: boolean;
-    };
+    stats?: { relevant_java_file_count?: number; ignored_entry_count?: number; parseable_file_count?: number; empty_submission?: boolean };
   };
-  included_files: {
-    file: {
-      file_id: string;
-      relative_path: string;
-      basename: string;
-      size_bytes: number;
-      sha256: string;
-    };
-    spaces: Record<string, Record<string, number>>;
-    ast?: {
-      provider?: string;
-      node_count?: number;
-      max_depth?: number;
-      top_node_types?: { kind: string; count: number }[];
-      top_paths?: { path: string; count: number }[];
-    };
-    normalizations_available: string[];
-  }[];
-  spaces: Record<
-    string,
-    {
-      representation: Record<string, number | string | Record<string, number>>;
-      top_dimensions: { feature: string; value: number; share: number }[];
-      comparison_dimensions?: { feature: string; value: number; share: number }[];
-      standardized_dimensions?: { feature: string; value: number; share: number }[];
-      top_neighbors: { source: string; target: string; weight: number; edge_type: string }[];
-      cluster_membership?: { cluster_id: string; size: number } | null;
-      graph_degree: number;
-      metadata?: Record<string, unknown>;
-    }
-  >;
+  included_files: { file: { file_id: string; relative_path: string; basename: string; size_bytes: number; sha256: string }; spaces: Record<string, Record<string, number>>; ast?: { provider?: string; node_count?: number; max_depth?: number; top_node_types?: { kind: string; count: number }[]; top_paths?: { path: string; count: number }[] }; normalizations_available: string[] }[];
+  spaces: Record<string, { representation: Record<string, number | string | Record<string, number>>; top_dimensions: { feature: string; value: number; share: number }[]; comparison_dimensions?: { feature: string; value: number; share: number }[]; standardized_dimensions?: { feature: string; value: number; share: number }[]; top_neighbors: { source: string; target: string; weight: number; edge_type: string; support_count?: number | null }[]; cluster_membership?: { cluster_id?: string | null; cluster_label?: string | null; size: number; membership_strength?: number; method?: string; color?: string; is_noise?: boolean } | null; cluster_diagnostics?: { label?: string; size?: number; summary_metrics?: Record<string, number>; signature_features?: { feature: string; cluster_mean: number; rest_mean: number; lift: number }[]; contrast_features?: { feature: string; cluster_mean: number; rest_mean: number; lift: number }[]; central_members?: { submission_id: string; submission_name: string; mean_internal_similarity: number }[]; strongest_internal_pairs?: { source: string; source_name: string; target: string; target_name: string; weight: number }[]; nearest_external_pairs?: { source: string; source_name: string; target: string; target_name: string; weight: number }[]; notes?: string[] } | null; graph_degree: number; metadata?: Record<string, unknown>; space_meta?: GraphPayload["meta"] }>;
 };
 
 export type PairDetail = {
@@ -75,11 +67,9 @@ export type PairDetail = {
   score_weights?: Record<string, number>;
   source_scores?: Record<string, number>;
   calibration?: Record<string, number | string>;
+  diagnostics?: Record<string, number | string>;
   top_common_signals: { feature: string; left_value: number; right_value: number; contribution: number }[];
   top_differing_signals: { feature: string; left_value: number; right_value: number; absolute_gap: number; dominant_submission_id: string }[];
 };
 
-export type Selection =
-  | { space: SpaceKey; kind: "node"; submissionId: string }
-  | { space: SpaceKey; kind: "edge"; source: string; target: string }
-  | null;
+export type Selection = | { space: SpaceKey; kind: "node"; submissionId: string } | { space: SpaceKey; kind: "edge"; source: string; target: string } | null;

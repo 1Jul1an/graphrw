@@ -1,4 +1,4 @@
-import { formatSpaceLabel } from "../lib/format";
+import { compactSpaceLabel } from "../lib/format";
 import type { SpaceKey } from "../lib/types";
 
 type Props = {
@@ -14,7 +14,7 @@ export function PageHeader({ activeSpace, hasGraphs }: Props) {
 
       <div className="mt-6 flex flex-wrap gap-3">
         <div className="rounded-full border border-slate-200 bg-white/80 px-4 py-2 text-sm text-slate-700 shadow-sm backdrop-blur dark:border-mdn-dark-border dark:bg-[#212426] dark:text-mdn-dark-muted">
-          Aktiver Raum: <span className="font-semibold text-slate-900 dark:text-mdn-dark-text">{formatSpaceLabel(activeSpace)}</span>
+          Aktiver Raum: <span className="font-semibold text-slate-900 dark:text-mdn-dark-text">{compactSpaceLabel(activeSpace)}</span>
         </div>
         <div className="rounded-full border border-slate-200 bg-white/80 px-4 py-2 text-sm text-slate-700 shadow-sm backdrop-blur dark:border-mdn-dark-border dark:bg-[#212426] dark:text-mdn-dark-muted">
           Sichtbarkeit: <span className="font-semibold text-slate-900 dark:text-mdn-dark-text">{hasGraphs ? "4 Graphen parallel" : "bereit zum Laden"}</span>

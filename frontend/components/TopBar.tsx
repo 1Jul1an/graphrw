@@ -1,4 +1,4 @@
-import { formatSpaceLabel } from "../lib/format";
+import { compactSpaceLabel } from "../lib/format";
 import type { RunPayload, SpaceKey } from "../lib/types";
 import { ThemeToggle } from "./ThemeToggle";
 
@@ -20,7 +20,7 @@ export function TopBar({ activeSpace, run }: Props) {
           <ThemeToggle />
           <div className="hidden items-center gap-3 sm:flex">
             <div className="rounded-full border border-slate-250 bg-white/70 px-3 py-1.5 text-xs text-slate-700 backdrop-blur dark:border-mdn-dark-border dark:bg-[#212426] dark:text-mdn-dark-muted">
-              Aktiver Raum: <span className="font-semibold text-slate-900 dark:text-mdn-dark-text">{formatSpaceLabel(activeSpace)}</span>
+              Aktiver Raum: <span className="font-semibold text-slate-900 dark:text-mdn-dark-text">{compactSpaceLabel(activeSpace)}</span>
             </div>
             <div className="rounded-full border border-slate-250 bg-white/70 px-3 py-1.5 text-xs text-slate-700 backdrop-blur dark:border-mdn-dark-border dark:bg-[#212426] dark:text-mdn-dark-muted">
               Run: <span className="font-semibold text-slate-900 dark:text-mdn-dark-text">{run?.status ?? "idle"}</span>

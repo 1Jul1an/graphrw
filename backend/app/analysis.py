@@ -3,21 +3,6 @@ from __future__ import annotations
 import itertools
 import math
 from collections import defaultdict
-
-CLUSTER_COLOR_PALETTE = [
-    {"fill": "#3b82f6", "border": "#1d4ed8"},
-    {"fill": "#10b981", "border": "#047857"},
-    {"fill": "#8b5cf6", "border": "#6d28d9"},
-    {"fill": "#f59e0b", "border": "#b45309"},
-    {"fill": "#ef4444", "border": "#b91c1c"},
-    {"fill": "#06b6d4", "border": "#0e7490"},
-    {"fill": "#ec4899", "border": "#be185d"},
-    {"fill": "#84cc16", "border": "#4d7c0f"},
-    {"fill": "#14b8a6", "border": "#0f766e"},
-    {"fill": "#f97316", "border": "#c2410c"},
-    {"fill": "#6366f1", "border": "#4338ca"},
-    {"fill": "#a855f7", "border": "#7e22ce"},
-]
 from pathlib import Path
 from statistics import pstdev
 from typing import Any
@@ -30,11 +15,23 @@ from .features import DISPLAY_SPACE_KEYS, FUSION_SPACE_KEY, PRIMARY_SPACE_KEYS, 
 from .utils import atomic_write_json
 
 SPACE_BLEND_WEIGHTS: dict[str, dict[str, float]] = {
-    "expr": {"profile": 0.40, "contrast": 0.25, "overlap": 0.20, "size": 0.15},
-    "struct": {"profile": 0.40, "contrast": 0.30, "overlap": 0.20, "size": 0.10},
-    "sem": {"profile": 0.25, "contrast": 0.20, "overlap": 0.40, "size": 0.15},
+    "expr": {"profile": 0.22, "contrast": 0.10, "overlap": 0.24, "size": 0.06, "rare_overlap": 0.38},
+    "struct": {"profile": 0.20, "contrast": 0.14, "overlap": 0.24, "size": 0.06, "rare_overlap": 0.36},
+    "sem": {"profile": 0.24, "contrast": 0.16, "overlap": 0.34, "size": 0.08, "rare_overlap": 0.18},
 }
-FUSION_BASE_WEIGHTS = {"expr": 0.30, "struct": 0.40, "sem": 0.30}
+FUSION_BASE_WEIGHTS = {"expr": 0.34, "struct": 0.38, "sem": 0.28}
+CLUSTER_PALETTE: list[tuple[str, str]] = [
+    ("#60a5fa", "#2563eb"),
+    ("#34d399", "#059669"),
+    ("#c084fc", "#7c3aed"),
+    ("#f59e0b", "#b45309"),
+    ("#f472b6", "#db2777"),
+    ("#22d3ee", "#0891b2"),
+    ("#a3e635", "#4d7c0f"),
+    ("#fb7185", "#e11d48"),
+]
+NOISE_CLUSTER_COLOR = "#cbd5e1"
+NOISE_CLUSTER_BORDER = "#64748b"
 
 ComparisonModels = dict[str, dict[str, dict[str, dict[str, float]]]]
 
@@ -154,6 +151,7 @@ def build_fusion_space(
     correlations: dict[str, dict[str, float]] = {space: {} for space in PRIMARY_SPACE_KEYS}
     uniqueness: dict[str, float] = {}
     sharpness: dict[str, float] = {}
+    support_thresholds: dict[str, float] = {}
 
     for left in PRIMARY_SPACE_KEYS:
         for right in PRIMARY_SPACE_KEYS:
@@ -163,13 +161,15 @@ def build_fusion_space(
                 correlations[left][right] = round(_pearson(raw_vectors[left], raw_vectors[right]), 6)
         positive_corrs = [max(0.0, correlations[left][other]) for other in PRIMARY_SPACE_KEYS if other != left]
         uniqueness[left] = 1.0 - (sum(positive_corrs) / len(positive_corrs) if positive_corrs else 0.0)
-        sharpness[left] = min(1.4, max(0.75, 0.75 + pstdev(raw_vectors[left]) / 0.20 if raw_vectors[left] else 0.75))
+        sharpness[left] = min(1.45, max(0.75, 0.75 + pstdev(raw_vectors[left]) / 0.18 if raw_vectors[left] else 0.75))
+        support_thresholds[left] = max(0.58, _percentile(cal_vectors[left], 0.72) if cal_vectors[left] else 0.58)
 
     unnormalized_weights = {}
     for space in PRIMARY_SPACE_KEYS:
-        unnormalized_weights[space] = FUSION_BASE_WEIGHTS[space] * (0.55 + 0.45 * uniqueness[space]) * sharpness[space]
+        unnormalized_weights[space] = FUSION_BASE_WEIGHTS[space] * (0.5 + 0.5 * uniqueness[space]) * sharpness[space]
     space_weights = _normalize_weights(unnormalized_weights)
 
+    total_unique_weight = max(1e-9, sum(space_weights[space] * max(0.05, uniqueness[space]) for space in PRIMARY_SPACE_KEYS))
     fusion_items: list[dict[str, Any]] = []
     for key in pair_keys:
         scores_raw = {space: pair_maps[space][key]["relation_raw"] for space in PRIMARY_SPACE_KEYS}
@@ -178,13 +178,36 @@ def build_fusion_space(
         weighted_variance = sum(space_weights[space] * (scores_cal[space] - weighted_mean) ** 2 for space in PRIMARY_SPACE_KEYS)
         conflict = math.sqrt(max(0.0, weighted_variance))
         agreement = max(0.0, 1.0 - conflict)
-        independent_support_weights = {
-            space: space_weights[space] * max(0.0, uniqueness[space])
-            for space in PRIMARY_SPACE_KEYS
-            if scores_cal[space] >= 0.65
-        }
-        independent_support = sum(independent_support_weights.values()) / max(1e-9, sum(space_weights[space] * max(0.0, uniqueness[space]) for space in PRIMARY_SPACE_KEYS))
-        fusion_raw = max(0.0, min(1.0, 0.78 * weighted_mean + 0.14 * agreement + 0.08 * independent_support))
+
+        support_flags = {space: scores_cal[space] >= support_thresholds[space] for space in PRIMARY_SPACE_KEYS}
+        support_count = sum(1 for value in support_flags.values() if value)
+        support_weight = sum(space_weights[space] for space, is_supported in support_flags.items() if is_supported)
+        support_uniqueness_weight = sum(
+            space_weights[space] * max(0.05, uniqueness[space])
+            for space, is_supported in support_flags.items()
+            if is_supported
+        )
+        independent_support = support_uniqueness_weight / total_unique_weight
+
+        strongest_space = max(PRIMARY_SPACE_KEYS, key=lambda candidate: scores_cal[candidate] * space_weights[candidate])
+        strongest_contribution = scores_cal[strongest_space] * space_weights[strongest_space]
+        total_contribution = max(1e-9, sum(scores_cal[space] * space_weights[space] for space in PRIMARY_SPACE_KEYS))
+        single_source_reliance = strongest_contribution / total_contribution
+        single_source_penalty = max(0.0, single_source_reliance - 0.72) if support_count < 2 else 0.0
+        cross_space_bonus = 0.0 if support_count == 0 else min(1.0, 0.55 * support_weight + 0.45 * (support_count / len(PRIMARY_SPACE_KEYS)))
+
+        fusion_raw = max(
+            0.0,
+            min(
+                1.0,
+                0.60 * weighted_mean
+                + 0.14 * agreement
+                + 0.14 * cross_space_bonus
+                + 0.08 * independent_support
+                + 0.04 * (support_count / len(PRIMARY_SPACE_KEYS))
+                - 0.10 * single_source_penalty,
+            ),
+        )
         left_id, right_id = key.split("::")
         fusion_items.append(
             {
@@ -193,18 +216,27 @@ def build_fusion_space(
                 "relation_raw": round(fusion_raw, 6),
                 "relation_cal": round(fusion_raw, 6),
                 "meta": {
-                    "method": "heuristic_correlation_discounted_fusion_v1",
+                    "method": "support_aware_correlation_discounted_fusion_v2",
                     "components": {
                         "weighted_consensus": round(weighted_mean, 6),
                         "agreement": round(agreement, 6),
+                        "cross_space_bonus": round(cross_space_bonus, 6),
                         "independent_support": round(independent_support, 6),
-                        "conflict_penalty": round(conflict, 6),
+                        "single_source_penalty": round(single_source_penalty, 6),
                     },
                     "weights": {space: round(space_weights[space], 6) for space in PRIMARY_SPACE_KEYS},
+                    "support_thresholds": {space: round(support_thresholds[space], 6) for space in PRIMARY_SPACE_KEYS},
+                    "support_flags": support_flags,
+                    "support_count": support_count,
                     "source_scores": {space: round(scores_cal[space], 6) for space in PRIMARY_SPACE_KEYS},
                     "source_scores_raw": {space: round(scores_raw[space], 6) for space in PRIMARY_SPACE_KEYS},
                     "source_correlations": correlations,
                     "source_uniqueness": {space: round(uniqueness[space], 6) for space in PRIMARY_SPACE_KEYS},
+                    "diagnostics": {
+                        "support_weight": round(support_weight, 6),
+                        "single_source_reliance": round(single_source_reliance, 6),
+                        "strongest_space": strongest_space,
+                    },
                 },
             }
         )
@@ -217,6 +249,7 @@ def build_fusion_space(
         "space_weights": {space: round(space_weights[space], 6) for space in PRIMARY_SPACE_KEYS},
         "source_correlations": correlations,
         "source_uniqueness": {space: round(uniqueness[space], 6) for space in PRIMARY_SPACE_KEYS},
+        "support_thresholds": {space: round(support_thresholds[space], 6) for space in PRIMARY_SPACE_KEYS},
     }
 
 
@@ -231,13 +264,19 @@ def build_neighbors_graphs_and_clusters(
     for space, pair_items in pair_items_by_space.items():
         values = [item["relation_cal"] for item in pair_items]
         global_floor = max(settings.min_similarity_floor, _percentile(values, settings.neighbor_percentile)) if values else settings.min_similarity_floor
-        neighbors = _top_k_neighbors(pair_items, k, global_floor)
+        neighbors, neighbor_meta = _top_k_neighbors(pair_items, k, global_floor)
         edges = _build_graph_edges(neighbors)
+        pair_lookup = {_pair_key(item["submission_i"], item["submission_j"]): item for item in pair_items}
+        similarity_stats = _similarity_stats(values)
+        degree_stats = _degree_stats(submission_lookup, edges)
+
         neighbor_payload = {
             "run_id": run_id,
             "space": space,
             "k": k,
             "similarity_floor": round(global_floor, 6),
+            "neighbor_meta": neighbor_meta,
+            "similarity_stats": similarity_stats,
             "items": edges,
         }
         atomic_write_json(run_dir / "neighbors" / space / "edges.json", neighbor_payload)
@@ -249,31 +288,23 @@ def build_neighbors_graphs_and_clusters(
             pair_items=pair_items,
             edges=edges,
         )
+        clusters_payload = _decorate_clusters_payload(clusters_payload)
         atomic_write_json(run_dir / "clusters" / space / "clusters.json", clusters_payload)
         cluster_lookup = _cluster_membership_lookup(clusters_payload)
 
         graph_payload = {
             "run_id": run_id,
             "space": space,
-            "cluster_legend": [
-                {
-                    "cluster_id": cluster["cluster_id"],
-                    "label": f"{cluster['cluster_id'].upper()} · {cluster['size']} Abgaben",
-                    "size": cluster["size"],
-                    "color": cluster.get("color"),
-                    "border_color": cluster.get("border_color"),
-                }
-                for cluster in clusters_payload.get("clusters", [])
-            ],
-            "noise_count": len(clusters_payload.get("noise", [])),
             "nodes": [
                 {
                     "submission_id": submission_id,
                     "label": label,
                     "cluster_id": cluster_lookup.get(submission_id, {}).get("cluster_id"),
+                    "cluster_label": cluster_lookup.get(submission_id, {}).get("cluster_label"),
+                    "cluster_size": cluster_lookup.get(submission_id, {}).get("cluster_size"),
                     "cluster_probability": cluster_lookup.get(submission_id, {}).get("membership_strength"),
-                    "cluster_color": cluster_lookup.get(submission_id, {}).get("color"),
-                    "cluster_border_color": cluster_lookup.get(submission_id, {}).get("border_color"),
+                    "cluster_color": cluster_lookup.get(submission_id, {}).get("cluster_color", NOISE_CLUSTER_COLOR),
+                    "cluster_border_color": cluster_lookup.get(submission_id, {}).get("cluster_border_color", NOISE_CLUSTER_BORDER),
                     "is_noise": cluster_lookup.get(submission_id, {}).get("is_noise", False),
                 }
                 for submission_id, label in submission_lookup.items()
@@ -285,16 +316,23 @@ def build_neighbors_graphs_and_clusters(
                     "weight": edge["relation_cal"],
                     "raw_weight": edge["relation_raw"],
                     "edge_type": "mutual_knn" if edge["is_mutual"] else "knn",
+                    "shared_neighbor_count": edge["shared_neighbor_count"],
+                    "support_count": pair_lookup.get(_pair_key(edge["submission_src"], edge["submission_dst"]), {}).get("meta", {}).get("support_count"),
                 }
                 for edge in edges
             ],
+            "cluster_legend": clusters_payload.get("cluster_legend", []),
             "meta": {
                 "k": k,
                 "construction": "mutual_knn" if settings.enable_mutual_knn else "knn",
+                "neighbor_strategy": "adaptive_local_top_k",
                 "similarity_floor": round(global_floor, 6),
                 "pair_count": len(pair_items),
+                "similarity_stats": similarity_stats,
+                "degree_stats": degree_stats,
                 "cluster_method": clusters_payload.get("method"),
                 "cluster_meta": clusters_payload.get("meta", {}),
+                "neighbor_meta": neighbor_meta,
             },
         }
         atomic_write_json(run_dir / "graphs" / space / "graph.json", graph_payload)
@@ -372,11 +410,14 @@ def _build_comparison_model(raw_features_by_submission: dict[str, dict[str, floa
         idf = math.log((1.0 + total_submissions) / (1.0 + document_frequency)) + 1.0
         kind = feature_kind(space, key)
         should_apply_idf = kind == "binary" or sparsity >= 0.4 or key.startswith(("ast_node:", "ast_edge:", "ast_path:"))
-        weight = idf if should_apply_idf else 1.0
+        base_weight = idf if should_apply_idf else 1.0
+        scale = _comparison_feature_scale(space, key)
+        weight = base_weight * scale
         feature_stats[key] = {
             "document_frequency": float(document_frequency),
             "idf": round(idf, 6),
             "weight": round(weight, 6),
+            "scale": round(scale, 6),
         }
         for submission_id in submission_ids:
             weighted[submission_id][key] = transformed[submission_id].get(key, 0.0) * weight
@@ -399,6 +440,28 @@ def _build_comparison_model(raw_features_by_submission: dict[str, dict[str, floa
     }
 
 
+def _comparison_feature_scale(space: str, key: str) -> float:
+    if space == "expr":
+        if key.startswith(("expr_ngram:", "line_skeleton:", "keyword_operator_pair:", "call_name:")):
+            return 1.35
+        if key.startswith(("keyword:", "operator:")):
+            return 1.15
+        if key in {"token_count", "identifier_count", "import_stmt_count", "line_length_mean", "line_length_std", "file_count"}:
+            return 0.45
+        return 1.0
+    if space == "struct":
+        if key.startswith(("ast_node_ratio:", "ast_type_ratio:", "ast_edge_ratio:", "ast_path_ratio:")):
+            return 1.35
+        if key.startswith(("ast_method_arity:", "ast_method_statement:")):
+            return 1.15
+        if key.startswith(("ast_node:", "ast_type:", "ast_edge:", "ast_path:")):
+            return 0.58
+        if key in {"ast_node_count", "ast_max_depth", "ast_unique_node_types", "ast_unique_exact_node_types", "file_count"}:
+            return 0.6
+        return 1.0
+    return 1.0
+
+
 def _transform_feature_value(space: str, key: str, value: float) -> float:
     kind = feature_kind(space, key)
     if kind == "binary":
@@ -419,15 +482,17 @@ def _hybrid_similarity(
     space: str,
 ) -> tuple[float, dict[str, Any]]:
     weights = SPACE_BLEND_WEIGHTS[space]
-    profile = _scaled_cosine(left_weighted, right_weighted)
-    contrast = _scaled_cosine(left_standardized, right_standardized, fallback=profile)
+    profile = _positive_cosine(left_weighted, right_weighted)
+    contrast = _signed_scaled_cosine(left_standardized, right_standardized, fallback=profile)
     overlap = _weighted_jaccard(left_weighted, right_weighted)
     size = _size_similarity(left_weighted, right_weighted)
+    rare_overlap = _rare_signal_overlap(left_weighted, right_weighted)
     raw = (
         weights["profile"] * profile
         + weights["contrast"] * contrast
         + weights["overlap"] * overlap
         + weights["size"] * size
+        + weights["rare_overlap"] * rare_overlap
     )
     return raw, {
         "components": {
@@ -435,16 +500,23 @@ def _hybrid_similarity(
             "contrast_cosine": round(contrast, 6),
             "overlap_jaccard": round(overlap, 6),
             "size_similarity": round(size, 6),
+            "rare_overlap": round(rare_overlap, 6),
         },
         "weights": weights,
     }
 
 
-def _scaled_cosine(left: dict[str, float], right: dict[str, float], fallback: float = 0.0) -> float:
+def _positive_cosine(left: dict[str, float], right: dict[str, float], fallback: float = 0.0) -> float:
+    if not any(left.values()) and not any(right.values()):
+        return fallback
+    return max(0.0, min(1.0, cosine_similarity(left, right)))
+
+
+def _signed_scaled_cosine(left: dict[str, float], right: dict[str, float], fallback: float = 0.0) -> float:
     if not any(left.values()) and not any(right.values()):
         return fallback
     cosine = cosine_similarity(left, right)
-    return (cosine + 1.0) / 2.0
+    return max(0.0, min(1.0, (cosine + 1.0) / 2.0))
 
 
 def _weighted_jaccard(left: dict[str, float], right: dict[str, float]) -> float:
@@ -509,20 +581,37 @@ def _percentile(values: list[float], quantile: float) -> float:
     return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
 
 
-def _top_k_neighbors(pair_items: list[dict[str, Any]], k: int, similarity_floor: float) -> dict[str, list[tuple[str, float, float]]]:
+def _top_k_neighbors(pair_items: list[dict[str, Any]], k: int, similarity_floor: float) -> tuple[dict[str, list[tuple[str, float, float]]], dict[str, Any]]:
     adjacency: dict[str, list[tuple[str, float, float]]] = defaultdict(list)
     for item in pair_items:
         adjacency[item["submission_i"]].append((item["submission_j"], item["relation_cal"], item["relation_raw"]))
         adjacency[item["submission_j"]].append((item["submission_i"], item["relation_cal"], item["relation_raw"]))
 
     result: dict[str, list[tuple[str, float, float]]] = {}
+    local_floors: list[float] = []
+    max_neighbors = max(k, k + 2)
     for submission_id, values in adjacency.items():
         ordered = sorted(values, key=lambda pair: (pair[1], pair[2]), reverse=True)
-        filtered = [pair for pair in ordered if pair[1] >= similarity_floor][:k]
-        if not filtered and ordered:
-            filtered = ordered[:1]
+        if not ordered:
+            result[submission_id] = []
+            local_floors.append(0.0)
+            continue
+        kth_index = min(len(ordered) - 1, max(0, k - 1))
+        kth_score = ordered[kth_index][1]
+        local_quantile = _percentile([pair[1] for pair in ordered], 0.72)
+        local_floor = max(similarity_floor * 0.72, min(kth_score, local_quantile) - 0.03)
+        filtered = [pair for pair in ordered if pair[1] >= local_floor][:max_neighbors]
+        if len(filtered) < min(k, len(ordered)):
+            filtered = ordered[: min(len(ordered), k)]
         result[submission_id] = filtered
-    return result
+        local_floors.append(local_floor)
+    return result, {
+        "global_floor": round(similarity_floor, 6),
+        "local_floor_mean": round(sum(local_floors) / max(1, len(local_floors)), 6),
+        "local_floor_min": round(min(local_floors) if local_floors else 0.0, 6),
+        "local_floor_max": round(max(local_floors) if local_floors else 0.0, 6),
+        "max_neighbors_per_node": max_neighbors,
+    }
 
 
 def _build_graph_edges(neighbors: dict[str, list[tuple[str, float, float]]]) -> list[dict[str, Any]]:
@@ -584,21 +673,19 @@ def _cluster_from_pair_items(
 
     if len(submission_ids) == 1:
         only_id = submission_ids[0]
-        clusters = [
-            {
-                "cluster_id": "c1",
-                "size": 1,
-                "members": [{"submission_id": only_id, "membership_strength": 1.0}],
-                "summary_metrics": {"internal_density": 1.0, "avg_pair_similarity": 1.0, "mean_membership_strength": 1.0},
-                "exemplar_submission_id": only_id,
-            }
-        ]
-        _apply_cluster_colors(clusters)
         return {
             "run_id": run_id,
             "space": space,
             "method": "singleton",
-            "clusters": clusters,
+            "clusters": [
+                {
+                    "cluster_id": "c1",
+                    "size": 1,
+                    "members": [{"submission_id": only_id, "membership_strength": 1.0}],
+                    "summary_metrics": {"internal_density": 1.0, "avg_pair_similarity": 1.0, "mean_membership_strength": 1.0},
+                    "exemplar_submission_id": only_id,
+                }
+            ],
             "noise": [],
             "meta": {"submission_count": 1},
         }
@@ -654,7 +741,24 @@ def _cluster_from_pair_items(
     ]
 
     clusters.sort(key=lambda item: (item["size"], item["summary_metrics"]["mean_membership_strength"]), reverse=True)
-    _apply_cluster_colors(clusters)
+    if not clusters and edges:
+        graph_fallback = _graph_support_fallback_clusters(
+            run_id=run_id,
+            space=space,
+            submission_lookup=submission_lookup,
+            edges=edges,
+            pair_items=pair_items,
+        )
+        if graph_fallback is not None:
+            graph_fallback.setdefault("meta", {}).update(
+                {
+                    "fallback": True,
+                    "reason": "all_noise_graph_support_fallback",
+                    "hdbscan": cluster_meta,
+                    "submission_count": len(submission_ids),
+                }
+            )
+            return graph_fallback
     return {
         "run_id": run_id,
         "space": space,
@@ -752,23 +856,150 @@ def _build_pair_matrices(submission_ids: list[str], pair_items: list[dict[str, A
     return similarity_matrix, distance_matrix
 
 
+def _graph_support_fallback_clusters(
+    *,
+    run_id: str,
+    space: str,
+    submission_lookup: dict[str, str],
+    edges: list[dict[str, Any]],
+    pair_items: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not edges:
+        return None
+    weights = [float(edge["relation_cal"]) for edge in edges]
+    strong_floor = max(0.0, _percentile(weights, 0.68) - 0.02)
+    medium_floor = max(0.0, _percentile(weights, 0.55) - 0.01)
+    pair_lookup = {_pair_key(item["submission_i"], item["submission_j"]): item for item in pair_items}
+
+    strong_edges = [
+        edge
+        for edge in edges
+        if edge["relation_cal"] >= strong_floor
+        or (edge.get("shared_neighbor_count", 0) >= 1 and edge["relation_cal"] >= medium_floor)
+    ]
+    if not strong_edges:
+        return None
+
+    adjacency: dict[str, set[str]] = {submission_id: set() for submission_id in submission_lookup}
+    for edge in strong_edges:
+        adjacency[edge["submission_src"]].add(edge["submission_dst"])
+        adjacency[edge["submission_dst"]].add(edge["submission_src"])
+
+    visited: set[str] = set()
+    clusters = []
+    noise = []
+    cluster_number = 0
+    for submission_id in submission_lookup:
+        if submission_id in visited:
+            continue
+        stack = [submission_id]
+        component = []
+        while stack:
+            current = stack.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            component.append(current)
+            stack.extend(sorted(adjacency[current] - visited))
+
+        if len(component) < 2:
+            noise.extend(
+                {
+                    "submission_id": member_id,
+                    "submission_name": submission_lookup[member_id],
+                    "outlier_score": 1.0,
+                }
+                for member_id in component
+            )
+            continue
+
+        component_edges = [
+            edge for edge in strong_edges if edge["submission_src"] in component and edge["submission_dst"] in component
+        ]
+        density = _component_density(component, component_edges)
+        if density < (0.34 if space == "struct" else 0.28):
+            noise.extend(
+                {
+                    "submission_id": member_id,
+                    "submission_name": submission_lookup[member_id],
+                    "outlier_score": round(max(0.0, 1.0 - density), 6),
+                }
+                for member_id in component
+            )
+            continue
+
+        cluster_number += 1
+        component_set = set(component)
+        strengths = {}
+        for member_id in component:
+            member_weights = [
+                edge["relation_cal"]
+                for edge in component_edges
+                if edge["submission_src"] == member_id or edge["submission_dst"] == member_id
+            ]
+            strengths[member_id] = sum(member_weights) / len(member_weights) if member_weights else density
+        exemplar_submission_id = max(component, key=lambda member_id: (strengths.get(member_id, 0.0), member_id))
+        mean_strength = sum(strengths.values()) / max(1, len(strengths))
+        pair_values = [pair_lookup[_pair_key(a, b)]["relation_cal"] for a, b in itertools.combinations(sorted(component), 2) if _pair_key(a, b) in pair_lookup]
+        clusters.append(
+            {
+                "cluster_id": f"c{cluster_number}",
+                "size": len(component),
+                "members": [
+                    {"submission_id": member_id, "membership_strength": round(strengths[member_id], 6)}
+                    for member_id in sorted(component)
+                ],
+                "exemplar_submission_id": exemplar_submission_id,
+                "summary_metrics": {
+                    "internal_density": density,
+                    "avg_pair_similarity": round(sum(pair_values) / len(pair_values), 6) if pair_values else density,
+                    "mean_membership_strength": round(mean_strength, 6),
+                    "cluster_span": round(max(0.0, 1.0 - (min(pair_values) if pair_values else density)), 6),
+                },
+            }
+        )
+
+    if not clusters:
+        return None
+    clusters.sort(key=lambda item: (item["size"], item["summary_metrics"]["mean_membership_strength"]), reverse=True)
+    return {
+        "run_id": run_id,
+        "space": space,
+        "method": "graph_support_components",
+        "clusters": clusters,
+        "noise": noise,
+        "meta": {
+            "submission_count": len(submission_lookup),
+            "cluster_count": len(clusters),
+            "noise_count": len(noise),
+            "strong_floor": round(strong_floor, 6),
+            "medium_floor": round(medium_floor, 6),
+            "strong_edge_count": len(strong_edges),
+        },
+    }
+
+
 def _cluster_membership_lookup(clusters_payload: dict[str, Any]) -> dict[str, dict[str, Any]]:
     lookup: dict[str, dict[str, Any]] = {}
     for cluster in clusters_payload.get("clusters", []):
         for member in cluster.get("members", []):
             lookup[member["submission_id"]] = {
                 "cluster_id": cluster.get("cluster_id"),
+                "cluster_label": cluster.get("label"),
+                "cluster_size": cluster.get("size"),
+                "cluster_color": cluster.get("color", NOISE_CLUSTER_COLOR),
+                "cluster_border_color": cluster.get("border_color", NOISE_CLUSTER_BORDER),
                 "membership_strength": member.get("membership_strength", 1.0),
-                "color": cluster.get("color"),
-                "border_color": cluster.get("border_color"),
                 "is_noise": False,
             }
     for noise_point in clusters_payload.get("noise", []):
         lookup[noise_point["submission_id"]] = {
             "cluster_id": None,
+            "cluster_label": "Noise",
+            "cluster_size": 1,
+            "cluster_color": NOISE_CLUSTER_COLOR,
+            "cluster_border_color": NOISE_CLUSTER_BORDER,
             "membership_strength": max(0.0, min(1.0, 1.0 - noise_point.get("outlier_score", 1.0))),
-            "color": None,
-            "border_color": None,
             "is_noise": True,
         }
     return lookup
@@ -815,6 +1046,100 @@ def _upper_triangle_percentile(matrix: np.ndarray, quantile: float) -> float:
     return _percentile(values, quantile) if values else 1.0
 
 
+def _rare_signal_overlap(left: dict[str, float], right: dict[str, float], limit: int = 14) -> float:
+    left_candidates = [(key, value) for key, value in left.items() if value > 0.0 and ":" in key]
+    right_candidates = [(key, value) for key, value in right.items() if value > 0.0 and ":" in key]
+    if not left_candidates or not right_candidates:
+        left_candidates = [(key, value) for key, value in left.items() if value > 0.0]
+        right_candidates = [(key, value) for key, value in right.items() if value > 0.0]
+    left_top = {key: value for key, value in sorted(left_candidates, key=lambda item: item[1], reverse=True)[:limit]}
+    right_top = {key: value for key, value in sorted(right_candidates, key=lambda item: item[1], reverse=True)[:limit]}
+    common = set(left_top) & set(right_top)
+    if not common:
+        return 0.0
+    numerator = sum(min(left_top[key], right_top[key]) for key in common)
+    denominator = sum(max(left_top[key], right_top[key]) for key in common)
+    return numerator / denominator if denominator else 0.0
+
+
+def _similarity_stats(values: list[float]) -> dict[str, Any]:
+    if not values:
+        return {"count": 0, "histogram": []}
+    histogram = []
+    bin_count = 8
+    for index in range(bin_count):
+        start = index / bin_count
+        end = (index + 1) / bin_count
+        if index == bin_count - 1:
+            count = sum(1 for value in values if start <= value <= end)
+        else:
+            count = sum(1 for value in values if start <= value < end)
+        histogram.append({"label": f"{start:.2f}–{end:.2f}", "count": count})
+    return {
+        "count": len(values),
+        "min": round(min(values), 6),
+        "max": round(max(values), 6),
+        "mean": round(sum(values) / len(values), 6),
+        "p10": round(_percentile(values, 0.10), 6),
+        "p25": round(_percentile(values, 0.25), 6),
+        "p50": round(_percentile(values, 0.50), 6),
+        "p75": round(_percentile(values, 0.75), 6),
+        "p90": round(_percentile(values, 0.90), 6),
+        "histogram": histogram,
+    }
+
+
+def _degree_stats(submission_lookup: dict[str, str], edges: list[dict[str, Any]]) -> dict[str, Any]:
+    degrees = {submission_id: 0 for submission_id in submission_lookup}
+    for edge in edges:
+        degrees[edge["submission_src"]] = degrees.get(edge["submission_src"], 0) + 1
+        degrees[edge["submission_dst"]] = degrees.get(edge["submission_dst"], 0) + 1
+    values = list(degrees.values())
+    if not values:
+        return {"min": 0, "max": 0, "mean": 0.0}
+    return {
+        "min": min(values),
+        "max": max(values),
+        "mean": round(sum(values) / len(values), 6),
+        "isolated_count": sum(1 for value in values if value == 0),
+    }
+
+
+def _decorate_clusters_payload(clusters_payload: dict[str, Any]) -> dict[str, Any]:
+    legend: list[dict[str, Any]] = []
+    for index, cluster in enumerate(clusters_payload.get("clusters", []), start=1):
+        color, border = CLUSTER_PALETTE[(index - 1) % len(CLUSTER_PALETTE)]
+        cluster["label"] = f"C{index}"
+        cluster["color"] = color
+        cluster["border_color"] = border
+        legend.append(
+            {
+                "cluster_id": cluster.get("cluster_id"),
+                "label": cluster["label"],
+                "size": cluster.get("size", 0),
+                "color": color,
+                "border_color": border,
+                "is_noise": False,
+            }
+        )
+    noise_count = len(clusters_payload.get("noise", []))
+    if noise_count:
+        legend.append(
+            {
+                "cluster_id": None,
+                "label": "Noise",
+                "size": noise_count,
+                "color": NOISE_CLUSTER_COLOR,
+                "border_color": NOISE_CLUSTER_BORDER,
+                "is_noise": True,
+            }
+        )
+    clusters_payload["cluster_legend"] = legend
+    clusters_payload.setdefault("meta", {})["noise_count"] = noise_count
+    clusters_payload.setdefault("meta", {})["cluster_count"] = len(clusters_payload.get("clusters", []))
+    return clusters_payload
+
+
 def _clusters_from_edges(run_id: str, space: str, submission_lookup: dict[str, str], edges: list[dict[str, Any]]) -> dict[str, Any]:
     adjacency: dict[str, set[str]] = {submission_id: set() for submission_id in submission_lookup}
     for edge in edges:
@@ -848,19 +1173,7 @@ def _clusters_from_edges(run_id: str, space: str, submission_lookup: dict[str, s
             }
         )
 
-    _apply_cluster_colors(clusters)
     return {"run_id": run_id, "space": space, "method": "connected_components", "clusters": clusters, "noise": []}
-
-
-def _cluster_palette_color(cluster_index: int) -> dict[str, str]:
-    return CLUSTER_COLOR_PALETTE[cluster_index % len(CLUSTER_COLOR_PALETTE)]
-
-
-def _apply_cluster_colors(clusters: list[dict[str, Any]]) -> None:
-    for cluster_index, cluster in enumerate(clusters):
-        palette = _cluster_palette_color(cluster_index)
-        cluster["color"] = palette["fill"]
-        cluster["border_color"] = palette["border"]
 
 
 def _component_density(component: list[str], edges: list[dict[str, Any]]) -> float:

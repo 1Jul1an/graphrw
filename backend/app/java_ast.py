@@ -228,6 +228,9 @@ def analyze_java_ast(source: str) -> AstSummary:
 
 def ast_summary_to_struct_features(summary: AstSummary) -> dict[str, float]:
     total_nodes = max(1, summary.named_node_count)
+    total_edges = max(1, sum(summary.edge_counts.values()))
+    total_paths = max(1, sum(summary.path_counts.values()))
+    method_count = max(1, summary.node_counts.get("method", 0) + summary.node_counts.get("constructor", 0))
     control_mass = 0
     decl_mass = 0
     stmt_mass = 0
@@ -249,10 +252,14 @@ def ast_summary_to_struct_features(summary: AstSummary) -> dict[str, float]:
         "ast_method_statement_max": float(summary.method_statement_max),
         "ast_method_control_mean": float(summary.method_control_mean),
         "ast_method_control_max": float(summary.method_control_max),
+        "ast_control_per_method": float(summary.node_counts.get("if", 0) + summary.node_counts.get("for", 0) + summary.node_counts.get("while", 0) + summary.node_counts.get("switch", 0)) / method_count,
+        "ast_path_entropy": _entropy(summary.path_counts.values()),
+        "ast_edge_entropy": _entropy(summary.edge_counts.values()),
     }
 
     for kind, count in summary.node_counts.items():
         features[f"ast_node:{kind}"] = float(count)
+        features[f"ast_node_ratio:{kind}"] = float(count) / total_nodes
         if kind in _CONTROL_KINDS:
             control_mass += count
         if kind in _DECLARATION_KINDS:
@@ -264,10 +271,13 @@ def ast_summary_to_struct_features(summary: AstSummary) -> dict[str, float]:
 
     for exact_type, count in summary.exact_node_counts.items():
         features[f"ast_type:{exact_type}"] = float(count)
+        features[f"ast_type_ratio:{exact_type}"] = float(count) / total_nodes
     for edge, count in summary.edge_counts.items():
         features[f"ast_edge:{edge}"] = float(count)
+        features[f"ast_edge_ratio:{edge}"] = float(count) / total_edges
     for path, count in summary.path_counts.items():
         features[f"ast_path:{path}"] = float(count)
+        features[f"ast_path_ratio:{path}"] = float(count) / total_paths
     for bucket, count in summary.method_arity_histogram.items():
         features[f"ast_method_arity:{bucket}"] = float(count)
     for bucket, count in summary.method_statement_histogram.items():
@@ -277,6 +287,7 @@ def ast_summary_to_struct_features(summary: AstSummary) -> dict[str, float]:
     features["ast_decl_ratio"] = decl_mass / total_nodes
     features["ast_stmt_ratio"] = stmt_mass / total_nodes
     features["ast_expr_ratio"] = expr_mass / total_nodes
+    features["ast_stmt_per_method"] = stmt_mass / method_count
     return features
 
 
