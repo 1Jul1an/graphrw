@@ -47,6 +47,8 @@ export function GraphView({ graph, space, selectedNodeId, selectedEdgeId, onNode
           label: node.label,
           clusterId: node.cluster_id ?? null,
           clusterProbability: node.cluster_probability ?? null,
+          clusterColor: node.cluster_color ?? palette.node,
+          clusterBorderColor: node.cluster_border_color ?? palette.border,
           isNoise: node.is_noise ?? false,
         },
         classes: [node.submission_id === selectedNodeId ? "selected-node" : "", node.is_noise ? "noise-node" : ""]
@@ -106,7 +108,7 @@ export function GraphView({ graph, space, selectedNodeId, selectedEdgeId, onNode
             style: {
               label: "data(label)",
               color: isDark ? "#f5f7fa" : "#111827",
-              "background-color": palette.node,
+              "background-color": "data(clusterColor)",
               "text-valign": "center",
               "text-halign": "center",
               width: 42,
@@ -116,7 +118,7 @@ export function GraphView({ graph, space, selectedNodeId, selectedEdgeId, onNode
               "text-wrap": "wrap",
               "text-max-width": 96,
               "border-width": 1.75,
-              "border-color": palette.border,
+              "border-color": "data(clusterBorderColor)",
             },
           },
           {

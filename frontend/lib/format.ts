@@ -25,10 +25,10 @@ export function componentWeightLabel(key: string, weights?: Record<string, numbe
 
 export function formatSpaceLabel(space: string) {
   const labels: Record<string, string> = {
-    expr: "Expr",
-    struct: "Struct",
-    sem: "Sem",
-    fusion: "Fusion",
+    expr: "Expression Space | Token-Ähnlichkeitsraum",
+    struct: "Structural Space | AST-Strukturraum",
+    sem: "Semantic Space | Semantiksignalraum",
+    fusion: "Fusion Space | kombinierter Ähnlichkeitsraum",
   };
   return labels[space] ?? space;
 }

@@ -3,6 +3,21 @@ from __future__ import annotations
 import itertools
 import math
 from collections import defaultdict
+
+CLUSTER_COLOR_PALETTE = [
+    {"fill": "#3b82f6", "border": "#1d4ed8"},
+    {"fill": "#10b981", "border": "#047857"},
+    {"fill": "#8b5cf6", "border": "#6d28d9"},
+    {"fill": "#f59e0b", "border": "#b45309"},
+    {"fill": "#ef4444", "border": "#b91c1c"},
+    {"fill": "#06b6d4", "border": "#0e7490"},
+    {"fill": "#ec4899", "border": "#be185d"},
+    {"fill": "#84cc16", "border": "#4d7c0f"},
+    {"fill": "#14b8a6", "border": "#0f766e"},
+    {"fill": "#f97316", "border": "#c2410c"},
+    {"fill": "#6366f1", "border": "#4338ca"},
+    {"fill": "#a855f7", "border": "#7e22ce"},
+]
 from pathlib import Path
 from statistics import pstdev
 from typing import Any
@@ -240,12 +255,25 @@ def build_neighbors_graphs_and_clusters(
         graph_payload = {
             "run_id": run_id,
             "space": space,
+            "cluster_legend": [
+                {
+                    "cluster_id": cluster["cluster_id"],
+                    "label": f"{cluster['cluster_id'].upper()} · {cluster['size']} Abgaben",
+                    "size": cluster["size"],
+                    "color": cluster.get("color"),
+                    "border_color": cluster.get("border_color"),
+                }
+                for cluster in clusters_payload.get("clusters", [])
+            ],
+            "noise_count": len(clusters_payload.get("noise", [])),
             "nodes": [
                 {
                     "submission_id": submission_id,
                     "label": label,
                     "cluster_id": cluster_lookup.get(submission_id, {}).get("cluster_id"),
                     "cluster_probability": cluster_lookup.get(submission_id, {}).get("membership_strength"),
+                    "cluster_color": cluster_lookup.get(submission_id, {}).get("color"),
+                    "cluster_border_color": cluster_lookup.get(submission_id, {}).get("border_color"),
                     "is_noise": cluster_lookup.get(submission_id, {}).get("is_noise", False),
                 }
                 for submission_id, label in submission_lookup.items()
@@ -556,19 +584,21 @@ def _cluster_from_pair_items(
 
     if len(submission_ids) == 1:
         only_id = submission_ids[0]
+        clusters = [
+            {
+                "cluster_id": "c1",
+                "size": 1,
+                "members": [{"submission_id": only_id, "membership_strength": 1.0}],
+                "summary_metrics": {"internal_density": 1.0, "avg_pair_similarity": 1.0, "mean_membership_strength": 1.0},
+                "exemplar_submission_id": only_id,
+            }
+        ]
+        _apply_cluster_colors(clusters)
         return {
             "run_id": run_id,
             "space": space,
             "method": "singleton",
-            "clusters": [
-                {
-                    "cluster_id": "c1",
-                    "size": 1,
-                    "members": [{"submission_id": only_id, "membership_strength": 1.0}],
-                    "summary_metrics": {"internal_density": 1.0, "avg_pair_similarity": 1.0, "mean_membership_strength": 1.0},
-                    "exemplar_submission_id": only_id,
-                }
-            ],
+            "clusters": clusters,
             "noise": [],
             "meta": {"submission_count": 1},
         }
@@ -624,6 +654,7 @@ def _cluster_from_pair_items(
     ]
 
     clusters.sort(key=lambda item: (item["size"], item["summary_metrics"]["mean_membership_strength"]), reverse=True)
+    _apply_cluster_colors(clusters)
     return {
         "run_id": run_id,
         "space": space,
@@ -728,12 +759,16 @@ def _cluster_membership_lookup(clusters_payload: dict[str, Any]) -> dict[str, di
             lookup[member["submission_id"]] = {
                 "cluster_id": cluster.get("cluster_id"),
                 "membership_strength": member.get("membership_strength", 1.0),
+                "color": cluster.get("color"),
+                "border_color": cluster.get("border_color"),
                 "is_noise": False,
             }
     for noise_point in clusters_payload.get("noise", []):
         lookup[noise_point["submission_id"]] = {
             "cluster_id": None,
             "membership_strength": max(0.0, min(1.0, 1.0 - noise_point.get("outlier_score", 1.0))),
+            "color": None,
+            "border_color": None,
             "is_noise": True,
         }
     return lookup
@@ -813,7 +848,19 @@ def _clusters_from_edges(run_id: str, space: str, submission_lookup: dict[str, s
             }
         )
 
+    _apply_cluster_colors(clusters)
     return {"run_id": run_id, "space": space, "method": "connected_components", "clusters": clusters, "noise": []}
+
+
+def _cluster_palette_color(cluster_index: int) -> dict[str, str]:
+    return CLUSTER_COLOR_PALETTE[cluster_index % len(CLUSTER_COLOR_PALETTE)]
+
+
+def _apply_cluster_colors(clusters: list[dict[str, Any]]) -> None:
+    for cluster_index, cluster in enumerate(clusters):
+        palette = _cluster_palette_color(cluster_index)
+        cluster["color"] = palette["fill"]
+        cluster["border_color"] = palette["border"]
 
 
 def _component_density(component: list[str], edges: list[dict[str, Any]]) -> float:

@@ -51,3 +51,19 @@ def test_hdbscan_precomputed_finds_clusters_and_noise() -> None:
     assert {"a", "b", "c"} in cluster_sets
     assert {"d", "e"} in cluster_sets
     assert any(item["submission_id"] == "f" for item in payload["noise"])
+
+
+def test_clusters_include_colors_in_payload() -> None:
+    submission_lookup = {"solo": "Solo"}
+
+    payload = _cluster_from_pair_items(
+        run_id="run_1",
+        space="expr",
+        submission_lookup=submission_lookup,
+        pair_items=[],
+        edges=[],
+    )
+
+    assert payload["clusters"][0]["cluster_id"] == "c1"
+    assert payload["clusters"][0]["color"].startswith("#")
+    assert payload["clusters"][0]["border_color"].startswith("#")
