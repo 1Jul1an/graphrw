@@ -16,6 +16,48 @@ export type ClusterLegendItem = {
   is_noise?: boolean;
 };
 
+export type ExplanationFacet = {
+  feature?: string;
+  label: string;
+  family?: string;
+  contribution?: number;
+  gap?: number;
+  lift?: number;
+};
+
+export type AgreementProfileRow = {
+  dimension: string;
+  label: string;
+  strength: number;
+  verdict: string;
+  evidence: string[];
+};
+
+export type PairExplanation = {
+  summary: string;
+  dominant_families: string[];
+  agreement_profile: AgreementProfileRow[];
+  top_shared_patterns: ExplanationFacet[];
+  top_separating_patterns: ExplanationFacet[];
+};
+
+export type ClusterExplanation = {
+  summary: string;
+  dominant_families: string[];
+  cohesion_basis: ExplanationFacet[];
+  boundary_basis: ExplanationFacet[];
+  core_members: string[];
+  internal_story: string[];
+  boundary_story: string[];
+};
+
+export type SubmissionSpaceExplanation = {
+  summary: string;
+  neighbor_story: string[];
+  why_here: string[];
+  why_not_else: string[];
+};
+
 export type GraphPayload = {
   nodes: {
     submission_id: string;
@@ -52,7 +94,30 @@ export type SubmissionDetail = {
     stats?: { relevant_java_file_count?: number; ignored_entry_count?: number; parseable_file_count?: number; empty_submission?: boolean };
   };
   included_files: { file: { file_id: string; relative_path: string; basename: string; size_bytes: number; sha256: string }; spaces: Record<string, Record<string, number>>; ast?: { provider?: string; node_count?: number; max_depth?: number; top_node_types?: { kind: string; count: number }[]; top_paths?: { path: string; count: number }[] }; normalizations_available: string[] }[];
-  spaces: Record<string, { representation: Record<string, number | string | Record<string, number>>; top_dimensions: { feature: string; value: number; share: number }[]; comparison_dimensions?: { feature: string; value: number; share: number }[]; standardized_dimensions?: { feature: string; value: number; share: number }[]; top_neighbors: { source: string; target: string; weight: number; edge_type: string; support_count?: number | null }[]; cluster_membership?: { cluster_id?: string | null; cluster_label?: string | null; size: number; membership_strength?: number; method?: string; color?: string; is_noise?: boolean } | null; cluster_diagnostics?: { label?: string; size?: number; summary_metrics?: Record<string, number>; signature_features?: { feature: string; cluster_mean: number; rest_mean: number; lift: number }[]; contrast_features?: { feature: string; cluster_mean: number; rest_mean: number; lift: number }[]; central_members?: { submission_id: string; submission_name: string; mean_internal_similarity: number }[]; strongest_internal_pairs?: { source: string; source_name: string; target: string; target_name: string; weight: number }[]; nearest_external_pairs?: { source: string; source_name: string; target: string; target_name: string; weight: number }[]; notes?: string[] } | null; graph_degree: number; metadata?: Record<string, unknown>; space_meta?: GraphPayload["meta"] }>;
+  spaces: Record<string, {
+    representation: Record<string, number | string | Record<string, number>>;
+    top_dimensions: { feature: string; value: number; share: number }[];
+    comparison_dimensions?: { feature: string; value: number; share: number }[];
+    standardized_dimensions?: { feature: string; value: number; share: number }[];
+    top_neighbors: { source: string; target: string; weight: number; edge_type: string; support_count?: number | null }[];
+    cluster_membership?: { cluster_id?: string | null; cluster_label?: string | null; size: number; membership_strength?: number; method?: string; color?: string; is_noise?: boolean } | null;
+    cluster_diagnostics?: {
+      label?: string;
+      size?: number;
+      summary_metrics?: Record<string, number>;
+      signature_features?: { feature: string; cluster_mean: number; rest_mean: number; lift: number }[];
+      contrast_features?: { feature: string; cluster_mean: number; rest_mean: number; lift: number }[];
+      central_members?: { submission_id: string; submission_name: string; mean_internal_similarity: number }[];
+      strongest_internal_pairs?: { source: string; source_name: string; target: string; target_name: string; weight: number }[];
+      nearest_external_pairs?: { source: string; source_name: string; target: string; target_name: string; weight: number }[];
+      notes?: string[];
+      explanation?: ClusterExplanation;
+    } | null;
+    explanation?: SubmissionSpaceExplanation;
+    graph_degree: number;
+    metadata?: Record<string, unknown>;
+    space_meta?: GraphPayload["meta"];
+  }>;
 };
 
 export type PairDetail = {
@@ -68,6 +133,7 @@ export type PairDetail = {
   source_scores?: Record<string, number>;
   calibration?: Record<string, number | string>;
   diagnostics?: Record<string, number | string>;
+  explanation?: PairExplanation;
   top_common_signals: { feature: string; left_value: number; right_value: number; contribution: number }[];
   top_differing_signals: { feature: string; left_value: number; right_value: number; absolute_gap: number; dominant_submission_id: string }[];
 };

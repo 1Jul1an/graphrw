@@ -4,6 +4,7 @@ import math
 from pathlib import Path
 from typing import Any
 
+from .explanations import explain_cluster, explain_pair, explain_submission_space
 from .features import DISPLAY_SPACE_KEYS, FUSION_SPACE_KEY, PRIMARY_SPACE_KEYS, rank_feature_dimensions
 from .utils import atomic_write_json, read_json
 
@@ -78,6 +79,14 @@ def materialize_read_models(
                 "top_neighbors": top_neighbors,
                 "cluster_membership": cluster_membership,
                 "cluster_diagnostics": cluster_diagnostics,
+                "explanation": explain_submission_space(
+                    space=space,
+                    submission_id=submission_id,
+                    submission_name=submission["submission_name"],
+                    top_neighbors=top_neighbors,
+                    cluster_membership=cluster_membership,
+                    cluster_diagnostics=cluster_diagnostics,
+                ),
                 "graph_degree": len(top_neighbors),
                 "metadata": representation.get("metadata", {}),
                 "space_meta": graphs[space].get("meta", {}),
@@ -203,7 +212,7 @@ def _cluster_membership_for_submission(clusters_payload: dict[str, Any], submiss
 
 def _cluster_diagnostics_payload(cluster: dict[str, Any]) -> dict[str, Any]:
     diagnostics = cluster.get("diagnostics", {})
-    return {
+    payload = {
         "label": cluster.get("label"),
         "size": cluster.get("size"),
         "summary_metrics": cluster.get("summary_metrics", {}),
@@ -214,6 +223,8 @@ def _cluster_diagnostics_payload(cluster: dict[str, Any]) -> dict[str, Any]:
         "nearest_external_pairs": diagnostics.get("nearest_external_pairs", []),
         "notes": diagnostics.get("notes", []),
     }
+    payload["explanation"] = explain_cluster(space=cluster.get("space", ""), cluster=cluster)
+    return payload
 
 
 def _enrich_clusters_payload(
@@ -242,6 +253,7 @@ def _enrich_clusters_payload(
             diagnostics["signature_features"] = []
             diagnostics["contrast_features"] = []
             diagnostics["notes"].append(f"Fusion nutzt Raumgewichte {fusion_meta.get('space_weights', {})}.")
+        cluster["space"] = space
         cluster["diagnostics"] = diagnostics
 
 
@@ -328,7 +340,7 @@ def _build_pair_detail_payload(assignment_id: str, run_id: str, space: str, left
     common_signals.sort(key=lambda item: item["contribution"], reverse=True)
     differing_signals.sort(key=lambda item: item["absolute_gap"], reverse=True)
 
-    return {
+    payload = {
         "assignment_id": assignment_id,
         "run_id": run_id,
         "space": space,
@@ -348,6 +360,8 @@ def _build_pair_detail_payload(assignment_id: str, run_id: str, space: str, left
         "submission_a_top_dimensions": rank_feature_dimensions(left_features),
         "submission_b_top_dimensions": rank_feature_dimensions(right_features),
     }
+    payload["explanation"] = explain_pair(space=space, pair_detail=payload)
+    return payload
 
 
 def _build_fusion_pair_detail_payload(*, assignment_id: str, run_id: str, left_id: str, right_id: str, left_name: str, right_name: str, relation: dict[str, Any], graph_edge: dict[str, Any] | None, fusion_meta: dict[str, Any]) -> dict[str, Any]:
@@ -356,7 +370,7 @@ def _build_fusion_pair_detail_payload(*, assignment_id: str, run_id: str, left_i
     source_scores_raw = meta.get("source_scores_raw", {})
     table_rows = [{"feature": space, "left_value": round(source_scores_raw.get(space, 0.0), 6), "right_value": round(source_scores.get(space, 0.0), 6), "contribution": round(meta.get("weights", {}).get(space, 0.0), 6)} for space in PRIMARY_SPACE_KEYS]
     differing = [{"feature": f"corr:{left}>{right}", "left_value": round(value, 6), "right_value": round(meta.get("source_uniqueness", {}).get(left, 0.0), 6), "absolute_gap": round(abs(value - meta.get("source_uniqueness", {}).get(left, 0.0)), 6), "dominant_submission_id": left_id if value >= meta.get("source_uniqueness", {}).get(left, 0.0) else right_id} for left, correlations in meta.get("source_correlations", {}).items() for right, value in correlations.items() if left != right]
-    return {
+    payload = {
         "assignment_id": assignment_id,
         "run_id": run_id,
         "space": FUSION_SPACE_KEY,
@@ -376,6 +390,8 @@ def _build_fusion_pair_detail_payload(*, assignment_id: str, run_id: str, left_i
         "top_common_signals": table_rows,
         "top_differing_signals": differing[:10],
     }
+    payload["explanation"] = explain_pair(space=FUSION_SPACE_KEY, pair_detail=payload)
+    return payload
 
 
 def _pair_key(left: str, right: str) -> str:
