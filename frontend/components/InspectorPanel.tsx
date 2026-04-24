@@ -16,8 +16,8 @@ function TextList({ items }: { items: string[] }) {
   if (!items.length) return <div className="text-sm text-slate-500 dark:text-mdn-dark-muted">-</div>;
   return (
     <div className="space-y-2 text-sm leading-7 text-slate-700 dark:text-mdn-dark-text">
-      {items.map((item) => (
-        <div key={item} className="rounded-xl border border-slate-150 bg-slate-25 px-3 py-2 dark:border-mdn-dark-border dark:bg-[#18191b]">
+      {items.map((item, index) => (
+        <div key={`${item}-${index}`} className="rounded-xl border border-slate-150 bg-slate-25 px-3 py-2 dark:border-mdn-dark-border dark:bg-[#18191b]">
           {item}
         </div>
       ))}

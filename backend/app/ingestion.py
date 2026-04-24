@@ -92,6 +92,7 @@ def ingest_submission_archive(
     archive_filename: str,
     archive_bytes: bytes,
     submission_dir,
+    extract_features: bool = True,
 ) -> SubmissionExtractionResult:
     atomic_write_bytes(submission_dir / "source.zip", archive_bytes)
     file_records: list[dict[str, Any]] = []
@@ -118,16 +119,22 @@ def ingest_submission_archive(
                 file_dir = submission_dir / "files" / file_id
                 file_dir.mkdir(parents=True, exist_ok=True)
                 atomic_write_bytes(file_dir / "raw.java", raw_bytes)
-                normalizations = file_normalizations(raw_text)
-                write_normalization_files(normalizations, file_dir / "normalized")
-                features = extract_file_space_features(raw_text)
-                feature_sets.append(features)
-                ast_meta = features.get("_meta", {}).get("ast", {})
-                parse_status = ast_meta.get("parse_status", "ok")
-                if parse_status == "ok":
-                    ast_ok_file_count += 1
+                if extract_features:
+                    normalizations = file_normalizations(raw_text)
+                    write_normalization_files(normalizations, file_dir / "normalized")
+                    features = extract_file_space_features(raw_text)
+                    feature_sets.append(features)
+                    ast_meta = features.get("_meta", {}).get("ast", {})
+                    parse_status = ast_meta.get("parse_status", "ok")
+                    if parse_status == "ok":
+                        ast_ok_file_count += 1
+                    else:
+                        ast_recovered_file_count += 1
                 else:
-                    ast_recovered_file_count += 1
+                    normalizations = {}
+                    features = {"expr": {}, "struct": {}, "sem": {}, "_meta": {"ast": {"provider": "skipped", "parse_status": "skipped"}}}
+                    ast_meta = features["_meta"]["ast"]
+                    parse_status = "skipped"
                 record = {
                     "file_id": file_id,
                     "submission_id": submission_id,

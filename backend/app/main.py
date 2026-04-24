@@ -6,11 +6,13 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+from .embedding_models import normalize_embedding_model
+from .engines import ENGINE2, normalize_engine
 from .pipeline import create_run, process_run, publish_run
 from .storage import storage
 from .utils import atomic_write_bytes, atomic_write_json, new_id, now_iso, read_json, sha256_bytes, slugify
 
-SPACE_PATTERN = "^(expr|struct|sem|fusion)$"
+SPACE_PATTERN = "^(expr|struct|sem|fusion|embedding|supervised)$"
 
 app = FastAPI(title="Java Graph MVP", version="0.4.0")
 app.add_middleware(
@@ -78,13 +80,22 @@ def start_analysis_run(
     background_tasks: BackgroundTasks,
     upload_id: str = Form(...),
     auto_publish: bool = Form(default=True),
+    engine: str = Form(default="engine1"),
+    embedding_model: str | None = Form(default=None),
 ) -> dict[str, Any]:
     assignment_dir = storage.assignment_dir(assignment_id)
     if not (assignment_dir / "assignment.json").exists():
         raise HTTPException(status_code=404, detail="Assignment nicht gefunden.")
     if not (assignment_dir / "uploads" / upload_id / "upload.json").exists():
         raise HTTPException(status_code=404, detail="Upload nicht gefunden.")
-    run_payload = create_run(assignment_id, upload_id)
+    try:
+        selected_engine = normalize_engine(engine)
+        selected_embedding_model = normalize_embedding_model(embedding_model or settings.ollama_embed_model) if selected_engine == ENGINE2 else None
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if embedding_model and selected_engine != ENGINE2:
+        raise HTTPException(status_code=400, detail="Ein Embedding-Modell kann nur mit Engine2 gesetzt werden.")
+    run_payload = create_run(assignment_id, upload_id, selected_engine, selected_embedding_model)
     background_tasks.add_task(process_run, assignment_id, run_payload["run_id"])
     if auto_publish:
         run_payload["auto_publish"] = True

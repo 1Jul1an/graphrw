@@ -4,6 +4,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .embedding_models import DEFAULT_EMBEDDING_MODEL
+
 
 @dataclass(slots=True)
 class Settings:
@@ -20,6 +22,11 @@ class Settings:
     hdbscan_cluster_selection_method: str = os.getenv("HDBSCAN_CLUSTER_SELECTION_METHOD", "eom")
     hdbscan_alpha: float = float(os.getenv("HDBSCAN_ALPHA", "1.0"))
     hdbscan_single_cluster_similarity: float = float(os.getenv("HDBSCAN_SINGLE_CLUSTER_SIMILARITY", "0.82"))
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+    ollama_embed_model: str = os.getenv("OLLAMA_EMBED_MODEL", DEFAULT_EMBEDDING_MODEL)
+    ollama_timeout_seconds: int = int(os.getenv("OLLAMA_TIMEOUT_SECONDS", "120"))
+    embedding_chunk_chars: int = int(os.getenv("EMBEDDING_CHUNK_CHARS", "6000"))
+    embedding_max_chunks_per_submission: int = int(os.getenv("EMBEDDING_MAX_CHUNKS_PER_SUBMISSION", "24"))
     cors_origins: list[str] = field(
         default_factory=lambda: [
             origin.strip()

@@ -1,9 +1,36 @@
-export const SPACES = ["expr", "struct", "sem", "fusion"] as const;
+export const SPACES = ["expr", "struct", "sem", "fusion", "embedding", "supervised"] as const;
 export type SpaceKey = (typeof SPACES)[number];
+
+export const ENGINE_OPTIONS = [
+  { key: "engine1", label: "Engine 1", description: "Feature Extraction" },
+  { key: "engine2", label: "Engine 2", description: "Ollama Embeddings" },
+  { key: "engine3", label: "Engine 3", description: "Supervised Learning" },
+] as const;
+
+export type EngineKey = (typeof ENGINE_OPTIONS)[number]["key"];
+
+export const EMBEDDING_MODEL_OPTIONS = [
+  { key: "quality", label: "Quality", model: "qwen3-embedding:8b", description: "stärker, aber schwerer" },
+  { key: "balanced", label: "Balanced", model: "qwen3-embedding:4b", description: "Default für Engine2" },
+  { key: "fast", label: "Fast", model: "qwen3-embedding:0.6b", description: "leicht und schnell" },
+] as const;
+
+export type EmbeddingModelKey = (typeof EMBEDDING_MODEL_OPTIONS)[number]["key"];
+export type EmbeddingModelName = (typeof EMBEDDING_MODEL_OPTIONS)[number]["model"];
+
+export const ENGINE_SPACES = {
+  engine1: ["expr", "struct", "sem", "fusion"],
+  engine2: ["embedding"],
+  engine3: ["supervised"],
+} as const satisfies Record<EngineKey, readonly SpaceKey[]>;
 
 export type RunPayload = {
   run_id: string;
   status: string;
+  engine?: EngineKey;
+  spaces?: SpaceKey[];
+  embedding_model?: EmbeddingModelName | null;
+  embedding_model_profile?: EmbeddingModelKey | null;
   pipeline_status?: Record<string, string>;
 };
 
@@ -95,7 +122,7 @@ export type SubmissionDetail = {
   };
   included_files: { file: { file_id: string; relative_path: string; basename: string; size_bytes: number; sha256: string }; spaces: Record<string, Record<string, number>>; ast?: { provider?: string; node_count?: number; max_depth?: number; top_node_types?: { kind: string; count: number }[]; top_paths?: { path: string; count: number }[] }; normalizations_available: string[] }[];
   spaces: Record<string, {
-    representation: Record<string, number | string | Record<string, number>>;
+    representation: Record<string, number | string | Record<string, number> | unknown[]>;
     top_dimensions: { feature: string; value: number; share: number }[];
     comparison_dimensions?: { feature: string; value: number; share: number }[];
     standardized_dimensions?: { feature: string; value: number; share: number }[];
@@ -132,7 +159,7 @@ export type PairDetail = {
   score_weights?: Record<string, number>;
   source_scores?: Record<string, number>;
   calibration?: Record<string, number | string>;
-  diagnostics?: Record<string, number | string>;
+  diagnostics?: Record<string, number | string | null>;
   explanation?: PairExplanation;
   top_common_signals: { feature: string; left_value: number; right_value: number; contribution: number }[];
   top_differing_signals: { feature: string; left_value: number; right_value: number; absolute_gap: number; dominant_submission_id: string }[];

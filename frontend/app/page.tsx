@@ -10,7 +10,9 @@ import { TopBar } from "../components/TopBar";
 import { UploadForm } from "../components/UploadForm";
 import { WorkspaceSummary } from "../components/WorkspaceSummary";
 import {
-  SPACES,
+  ENGINE_SPACES,
+  type EmbeddingModelName,
+  type EngineKey,
   type GraphPayload,
   type PairDetail,
   type RunPayload,
@@ -24,6 +26,9 @@ const API_BASE = process.env.NEXT_PUBLIC_API_BASE ?? "http://localhost:8000/api"
 export default function Page() {
   const [assignmentName, setAssignmentName] = useState("Assignment MVP Demo");
   const [bundle, setBundle] = useState<File | null>(null);
+  const [activeEngine, setActiveEngine] = useState<EngineKey>("engine1");
+  const [embeddingModel, setEmbeddingModel] = useState<EmbeddingModelName>("qwen3-embedding:4b");
+  const activeSpaces = ENGINE_SPACES[activeEngine];
   const [assignmentId, setAssignmentId] = useState<string | null>(null);
   const [uploadId, setUploadId] = useState<string | null>(null);
   const [run, setRun] = useState<RunPayload | null>(null);
@@ -34,6 +39,16 @@ export default function Page() {
   const [pairDetail, setPairDetail] = useState<PairDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    const spaces = ENGINE_SPACES[activeEngine];
+    if (!(spaces as readonly SpaceKey[]).includes(activeSpace)) {
+      setActiveSpace(spaces[0]);
+      setSelection(null);
+      setSubmissionDetail(null);
+      setPairDetail(null);
+    }
+  }, [activeEngine, activeSpace]);
 
   useEffect(() => {
     if (!run?.run_id || !assignmentId) return;
@@ -56,11 +71,12 @@ export default function Page() {
     if (!assignmentId || run?.status !== "published") return;
 
     let cancelled = false;
+    const runSpaces = (run.spaces?.length ? run.spaces : [...activeSpaces]) as SpaceKey[];
 
-    async function loadAllGraphs() {
+    async function loadGraphs() {
       try {
         const responses = await Promise.allSettled(
-          SPACES.map(async (space) => {
+          runSpaces.map(async (space) => {
             const response = await fetch(`${API_BASE.replace(/\/$/, "")}/assignments/${assignmentId}/graphs?space=${space}`);
             if (!response.ok) {
               throw new Error(`Graph ${space} konnte nicht geladen werden (${response.status}).`);
@@ -93,12 +109,12 @@ export default function Page() {
       }
     }
 
-    loadAllGraphs();
+    loadGraphs();
 
     return () => {
       cancelled = true;
     };
-  }, [assignmentId, run?.status]);
+  }, [assignmentId, activeSpaces, run?.spaces, run?.status]);
 
   useEffect(() => {
     if (!assignmentId || !selection || run?.status !== "published") {
@@ -133,11 +149,21 @@ export default function Page() {
       .catch((err) => setError(err instanceof Error ? err.message : String(err)));
   }, [assignmentId, selection, run?.status]);
 
-  const canStart = useMemo(() => Boolean(bundle) && !busy, [bundle, busy]);
+  const canStart = useMemo(() => Boolean(bundle) && !busy && activeEngine !== "engine3", [activeEngine, bundle, busy]);
+
+  function handleEngineChange(engine: EngineKey) {
+    setActiveEngine(engine);
+    setActiveSpace(ENGINE_SPACES[engine][0]);
+    setGraphs({});
+    setSelection(null);
+    setSubmissionDetail(null);
+    setPairDetail(null);
+    setError(null);
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault();
-    if (!bundle) return;
+    if (!bundle || activeEngine === "engine3") return;
 
     setBusy(true);
     setError(null);
@@ -145,7 +171,7 @@ export default function Page() {
     setSelection(null);
     setSubmissionDetail(null);
     setPairDetail(null);
-    setActiveSpace("expr");
+    setActiveSpace(ENGINE_SPACES[activeEngine][0]);
 
     try {
       const assignmentForm = new FormData();
@@ -169,11 +195,18 @@ export default function Page() {
       const runForm = new FormData();
       runForm.append("upload_id", upload.upload_id);
       runForm.append("auto_publish", "true");
+      runForm.append("engine", activeEngine);
+      if (activeEngine === "engine2") {
+        runForm.append("embedding_model", embeddingModel);
+      }
       const runResponse = await fetch(`${API_BASE.replace(/\/$/, "")}/assignments/${assignment.assignment_id}/analysis-runs`, {
         method: "POST",
         body: runForm,
       });
       const runPayload = (await runResponse.json()) as RunPayload;
+      if (!runResponse.ok) {
+        throw new Error((runPayload as unknown as { detail?: string }).detail ?? `Run konnte nicht gestartet werden (${runResponse.status}).`);
+      }
       setRun(runPayload);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -184,16 +217,16 @@ export default function Page() {
 
   return (
     <div className="min-h-screen bg-slate-75 text-slate-900 dark:bg-mdn-dark-bg dark:text-mdn-dark-text">
-      <TopBar activeSpace={activeSpace} run={run} />
+      <TopBar activeEngine={activeEngine} activeSpace={activeSpace} run={run} />
 
       <div className="w-full px-4 sm:px-6 lg:px-8 2xl:px-10">
         <div className="grid grid-cols-1 gap-8 xl:grid-cols-[272px_minmax(0,1fr)]">
-          <aside className="hidden xl:block py-8">
-            <DocsSidebar activeSpace={activeSpace} graphs={graphs} run={run} />
+          <aside className="hidden py-8 xl:block">
+            <DocsSidebar activeEngine={activeEngine} activeSpace={activeSpace} spaces={activeSpaces} graphs={graphs} run={run} />
           </aside>
 
           <main className="min-w-0 py-8">
-            <PageHeader activeSpace={activeSpace} hasGraphs={Object.keys(graphs).length > 0} />
+            <PageHeader activeEngine={activeEngine} activeSpace={activeSpace} hasGraphs={Object.keys(graphs).length > 0} />
 
             <div className="space-y-6">
               <section id="setup" className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1.15fr)_minmax(360px,0.85fr)]">
@@ -202,20 +235,26 @@ export default function Page() {
                   bundleName={bundle?.name ?? null}
                   busy={busy}
                   canStart={canStart}
+                  activeEngine={activeEngine}
+                  embeddingModel={embeddingModel}
                   onSubmit={handleSubmit}
                   onAssignmentNameChange={setAssignmentName}
                   onBundleChange={setBundle}
+                  onEngineChange={handleEngineChange}
+                  onEmbeddingModelChange={setEmbeddingModel}
                 />
-                <StatusPanel assignmentId={assignmentId} uploadId={uploadId} run={run} error={error} />
+                <StatusPanel activeEngine={activeEngine} assignmentId={assignmentId} uploadId={uploadId} run={run} error={error} />
               </section>
 
               <section id="workspace">
-                <WorkspaceSummary graphs={graphs} activeSpace={activeSpace} />
+                <WorkspaceSummary graphs={graphs} spaces={activeSpaces} activeEngine={activeEngine} activeSpace={activeSpace} />
               </section>
 
               <section id="graphs" className="w-full">
                 <GraphsGrid
                   graphs={graphs}
+                  spaces={activeSpaces}
+                  activeEngine={activeEngine}
                   activeSpace={activeSpace}
                   selection={selection}
                   onActivateSpace={setActiveSpace}
