@@ -6,8 +6,10 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+from .drift import create_drift_run, delete_drift_bundle, drift_run_artifacts, import_drift_bundle, latest_drift_run, list_drift_assignments, list_drift_bundles, process_drift_run
 from .embedding_models import normalize_embedding_model
 from .engines import ENGINE2, normalize_engine
+from .ingestion import BundleError
 from .pipeline import create_run, process_run, publish_run
 from .storage import storage
 from .utils import atomic_write_bytes, atomic_write_json, new_id, now_iso, read_json, sha256_bytes, slugify
@@ -27,6 +29,74 @@ app.add_middleware(
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+
+
+@app.get("/api/drift/assignments")
+def list_drift_assignment_keys() -> list[dict[str, Any]]:
+    return list_drift_assignments()
+
+
+@app.post("/api/drift/bundles")
+async def upload_drift_bundle(assignment_key: str = Form(...), year: int = Form(...), file: UploadFile = File(...)) -> dict[str, Any]:
+    try:
+        return await import_drift_bundle(assignment_key=assignment_key, year=year, filename=file.filename, content=await file.read())
+    except (ValueError, BundleError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+
+
+@app.get("/api/drift/bundles")
+def list_drift_assignment_bundles(assignment_key: str = Query(...)) -> list[dict[str, Any]]:
+    try:
+        return list_drift_bundles(assignment_key)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.delete("/api/drift/bundles/{bundle_id}")
+def remove_drift_bundle(bundle_id: str, assignment_key: str = Query(...)) -> dict[str, Any]:
+    try:
+        return delete_drift_bundle(assignment_key, bundle_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.post("/api/drift/runs")
+def start_drift_run(
+    background_tasks: BackgroundTasks,
+    assignment_key: str = Form(...),
+    embedding_model: str | None = Form(default=None),
+    top_k: int | None = Form(default=None),
+) -> dict[str, Any]:
+    try:
+        run_payload = create_drift_run(assignment_key=assignment_key, embedding_model=embedding_model, top_k=top_k)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    background_tasks.add_task(process_drift_run, run_payload["assignmentKey"], run_payload["runId"])
+    return run_payload
+
+
+@app.get("/api/drift/runs/latest")
+def get_latest_drift_run(assignment_key: str | None = Query(default=None)) -> dict[str, Any]:
+    try:
+        return latest_drift_run(assignment_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/drift/runs/{run_id}/artifacts")
+def get_drift_run_artifacts(run_id: str) -> dict[str, Any]:
+    try:
+        return drift_run_artifacts(run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.post("/api/assignments")

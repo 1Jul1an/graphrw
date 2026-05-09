@@ -166,3 +166,150 @@ export type PairDetail = {
 };
 
 export type Selection = | { space: SpaceKey; kind: "node"; submissionId: string } | { space: SpaceKey; kind: "edge"; source: string; target: string } | null;
+
+
+export type DriftIgnoredEntry = {
+  path: string;
+  filename: string;
+  kind?: string;
+  reason: string;
+  sizeBytes?: number;
+  javaFileCount?: number;
+};
+
+export type DriftBundleManifest = {
+  bundleId: string;
+  assignmentKey: string;
+  year: number;
+  validSubmissionZipCount: number;
+  ignoredLooseFileCount: number;
+  ignoredZipWithoutJavaCount: number;
+  ignoredCorruptZipCount?: number;
+  validSubmissionZips?: DriftIgnoredEntry[];
+  ignoredFiles?: DriftIgnoredEntry[];
+  ignoredZips?: DriftIgnoredEntry[];
+  truncated?: boolean;
+  createdAt?: string;
+};
+
+export type DriftBundle = {
+  bundleId: string;
+  assignmentKey: string;
+  year: number;
+  originalFilename: string;
+  sha256?: string;
+  sizeBytes?: number;
+  createdAt?: string;
+  storageRoot?: string;
+  validSubmissionZipCount: number;
+  ignoredLooseFileCount?: number;
+  ignoredZipWithoutJavaCount?: number;
+  ignoredCorruptZipCount?: number;
+  importStatus?: string;
+  manifest?: DriftBundleManifest;
+};
+
+export type DriftRunPayload = {
+  runId: string;
+  assignmentKey: string;
+  status: string;
+  embeddingModel?: string;
+  embeddingModelProfile?: string | null;
+  topK?: number;
+  createdAt?: string;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  pipelineStatus?: Record<string, string>;
+  error?: string;
+};
+
+export type DriftOverview = {
+  assignmentKey: string;
+  runId?: string;
+  includedYears: number[];
+  totalSubmissions: number;
+  submissionsPerYear: Record<string, number>;
+  clusterCount: number;
+  outlierCount: number;
+  embeddingModel: string;
+  embeddingDimension?: number;
+  createdAt: string;
+  driftSchemaVersion?: number;
+  outlierDefinition?: string;
+};
+
+export type DriftProjectionPoint = {
+  submissionId: string;
+  x: number;
+  y: number;
+  year: number;
+  clusterId: string;
+  shapeKey: string;
+  label: string;
+  outlierScore?: number;
+};
+
+export type DriftProjection = {
+  assignmentKey: string;
+  runId: string;
+  points: DriftProjectionPoint[];
+  yearShapes: Record<string, string>;
+};
+
+export type DriftCluster = {
+  clusterId: string;
+  size: number;
+  dominantYear: number | null;
+  yearDistribution: Record<string, number>;
+  centroidX: number;
+  centroidY: number;
+  isNewCluster?: boolean;
+  isDecliningCluster?: boolean;
+  exemplarSubmissions?: string[];
+};
+
+export type DriftClusters = {
+  clusters: DriftCluster[];
+};
+
+export type DriftYearStat = {
+  year: number;
+  submissionCount: number;
+  centroidX: number;
+  centroidY: number;
+  clusterDistribution: Record<string, number>;
+  outlierCount: number;
+};
+
+export type DriftYearStats = {
+  years: DriftYearStat[];
+};
+
+export type DriftYearSimilarityMatrix = {
+  years: number[];
+  matrix: number[][];
+  metric: string;
+};
+
+export type DriftNeighbor = {
+  submissionId: string;
+  similarity: number;
+  year: number;
+  clusterId: string;
+};
+
+export type DriftNeighbors = {
+  metric: string;
+  topK: number;
+  items: { submissionId: string; neighbors: DriftNeighbor[] }[];
+};
+
+export type DriftArtifacts = {
+  run: DriftRunPayload;
+  overview: DriftOverview;
+  projection: DriftProjection;
+  clusters: DriftClusters;
+  year_stats: DriftYearStats;
+  year_similarity_matrix: DriftYearSimilarityMatrix;
+  neighbors?: DriftNeighbors;
+};

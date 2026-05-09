@@ -1,0 +1,1034 @@
+"use client";
+
+import type { ReactNode } from "react";
+import { Card } from "../Card";
+import type {
+  DriftCluster,
+  DriftClusters,
+  DriftNeighbor,
+  DriftNeighbors,
+  DriftOverview,
+  DriftProjectionPoint,
+  DriftYearSimilarityMatrix,
+  DriftYearStats,
+} from "../../lib/types";
+
+const YEAR_COLORS = [
+  "#2563eb",
+  "#16a34a",
+  "#d97706",
+  "#9333ea",
+  "#dc2626",
+  "#0891b2",
+  "#4f46e5",
+  "#65a30d",
+];
+const CLUSTER_COLORS = [
+  "#0ea5e9",
+  "#22c55e",
+  "#a855f7",
+  "#f59e0b",
+  "#ec4899",
+  "#14b8a6",
+  "#84cc16",
+  "#f43f5e",
+  "#6366f1",
+  "#64748b",
+];
+const BOUNDARY_COLOR = "#94a3b8";
+
+type Bounds = { minX: number; maxX: number; minY: number; maxY: number };
+
+type MapProps = {
+  points: DriftProjectionPoint[];
+  allPoints: DriftProjectionPoint[];
+  years: number[];
+  clusters: DriftCluster[];
+  selectedId: string | null;
+  onSelect: (point: DriftProjectionPoint) => void;
+  showNeighbors?: boolean;
+  neighborIds?: Set<string>;
+};
+
+export function DriftOverviewCards({ overview }: { overview: DriftOverview }) {
+  const values = [
+    { label: "Assignment Key", value: overview.assignmentKey },
+    { label: "Submissions", value: String(overview.totalSubmissions) },
+    { label: "Jahrgänge", value: overview.includedYears.join(", ") || "-" },
+    { label: "Cluster", value: String(overview.clusterCount) },
+    { label: "Randpunkte", value: String(overview.outlierCount) },
+    { label: "Embedding-Modell", value: overview.embeddingModel || "-" },
+  ];
+  return (
+    <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      {values.map((item) => (
+        <div key={item.label} className="docs-card p-5">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-mdn-dark-muted">
+            {item.label}
+          </div>
+          <div className="mt-2 break-words text-2xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-mdn-dark-text">
+            {item.value}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+export function DriftEmbeddingMapByYear(props: MapProps) {
+  return (
+    <Card
+      title="Embedding Map nach Jahrgang"
+      eyebrow="Lösungsraum"
+      description="Diese Ansicht zeigt, ob Jahrgänge räumlich zusammenliegen oder auseinanderdriften."
+    >
+      <ScatterPlot
+        mode="year"
+        points={props.points}
+        allPoints={props.allPoints}
+        years={props.years}
+        clusters={props.clusters}
+        selectedId={props.selectedId}
+        onSelect={props.onSelect}
+        showNeighbors={props.showNeighbors}
+        neighborIds={props.neighborIds}
+      />
+      <DriftLegend
+        title="Jahrgänge"
+        items={props.years.map((year) => ({
+          label: String(year),
+          color: yearColor(year, props.years),
+          shape: yearShapeForPoint(props.allPoints, year),
+        }))}
+      />
+    </Card>
+  );
+}
+
+export function DriftEmbeddingMapByCluster(props: MapProps) {
+  return (
+    <Card
+      title="Embedding Map nach Cluster"
+      eyebrow="Lösungsmuster"
+      description="Diese Ansicht zeigt, welche Lösungsmuster unabhängig vom Jahr entstehen."
+    >
+      <ScatterPlot
+        mode="cluster"
+        points={props.points}
+        allPoints={props.allPoints}
+        years={props.years}
+        clusters={props.clusters}
+        selectedId={props.selectedId}
+        onSelect={props.onSelect}
+        showNeighbors={props.showNeighbors}
+        neighborIds={props.neighborIds}
+      />
+      <div className="mt-4 grid gap-4 xl:grid-cols-2">
+        <DriftLegend
+          title="Clusterfarben"
+          items={orderedClusters(props.clusters).map((cluster) => ({
+            label: cluster.clusterId,
+            color: clusterColor(cluster.clusterId, props.clusters),
+          }))}
+        />
+        <DriftLegend
+          title="Jahrgang-Shapes"
+          items={props.years.map((year) => ({
+            label: String(year),
+            color: yearColor(year, props.years),
+            shape: yearShapeForPoint(props.allPoints, year),
+          }))}
+        />
+      </div>
+    </Card>
+  );
+}
+
+export function DriftClusterDistributionChart({
+  stats,
+  clusters,
+}: {
+  stats: DriftYearStats;
+  clusters: DriftClusters;
+}) {
+  const ordered = orderedClusters(clusters.clusters);
+  const clusterIds = ordered.map((cluster) => cluster.clusterId);
+
+  return (
+    <Card
+      title="Cluster-Verteilung pro Jahr"
+      eyebrow="Jahrgangsmix"
+      description="Diese Ansicht zeigt, welche Cluster über die Jahre wachsen, verschwinden oder neu entstehen."
+    >
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+        <div className="overflow-x-auto">
+          <div className="flex min-w-[680px] items-end gap-4 border-b border-slate-200 pb-4 dark:border-mdn-dark-border">
+            {stats.years.map((yearStat) => {
+              const total = Math.max(
+                1,
+                Object.values(yearStat.clusterDistribution).reduce(
+                  (sum, value) => sum + value,
+                  0,
+                ),
+              );
+              return (
+                <div
+                  key={yearStat.year}
+                  className="flex min-w-[96px] flex-1 flex-col items-center gap-2"
+                >
+                  <div className="flex h-56 w-14 flex-col-reverse overflow-hidden rounded-2xl border border-slate-200 bg-slate-50 dark:border-mdn-dark-border dark:bg-[#18191b]">
+                    {clusterIds.map((clusterId) => {
+                      const value =
+                        yearStat.clusterDistribution[clusterId] ?? 0;
+                      const height = `${(value / total) * 100}%`;
+                      return value > 0 ? (
+                        <div
+                          key={clusterId}
+                          className="w-full"
+                          style={{
+                            height,
+                            backgroundColor: clusterColor(clusterId, ordered),
+                          }}
+                          title={`${yearStat.year} · ${clusterId}: ${value} von ${total}`}
+                        />
+                      ) : null;
+                    })}
+                  </div>
+                  <div className="text-center">
+                    <div className="text-xs font-semibold tabular-nums text-slate-800 dark:text-mdn-dark-text">
+                      {yearStat.year}
+                    </div>
+                    <div className="text-[11px] text-slate-500 dark:text-mdn-dark-muted">
+                      {total} Submissions
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="mt-3 text-xs text-slate-500 dark:text-mdn-dark-muted">
+          y-Achse: Anteil innerhalb des jeweiligen Jahrgangs.
+        </div>
+      </div>
+      <DriftLegend
+        title="Cluster"
+        items={ordered.map((cluster) => ({
+          label: cluster.clusterId,
+          color: clusterColor(cluster.clusterId, ordered),
+        }))}
+      />
+    </Card>
+  );
+}
+
+export function DriftCentroidTimelineChart({
+  stats,
+  years,
+}: {
+  stats: DriftYearStats;
+  years: number[];
+}) {
+  const width = 760;
+  const height = 400;
+  const margin = { top: 28, right: 28, bottom: 40, left: 46 };
+  const points = stats.years.map((item) => ({
+    x: item.centroidX,
+    y: item.centroidY,
+    year: item.year,
+  }));
+  const bounds = boundsFor(points);
+  const sx = (x: number) =>
+    scale(x, bounds.minX, bounds.maxX, margin.left, width - margin.right);
+  const sy = (y: number) =>
+    scale(y, bounds.minY, bounds.maxY, height - margin.bottom, margin.top);
+  const polyline = points
+    .map((point) => `${sx(point.x)},${sy(point.y)}`)
+    .join(" ");
+
+  return (
+    <Card
+      title="Jahrgangs-Centroid-Drift"
+      eyebrow="Zeitlinie"
+      description="Diese Ansicht zeigt die Bewegung des durchschnittlichen Lösungsmusters über Zeit."
+    >
+      <div className="overflow-x-auto">
+        <svg
+          viewBox={`0 0 ${width} ${height}`}
+          className="min-w-[720px] rounded-2xl border border-slate-200 bg-white dark:border-mdn-dark-border dark:bg-[#202326]"
+        >
+          <Grid width={width} height={height} margin={margin} />
+          <polyline
+            points={polyline}
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+            className="text-slate-400 dark:text-mdn-dark-muted"
+          />
+          {points.map((point) => (
+            <g key={point.year}>
+              <circle
+                cx={sx(point.x)}
+                cy={sy(point.y)}
+                r={8}
+                fill={yearColor(point.year, years)}
+                stroke="white"
+                strokeWidth={2}
+              >
+                <title>{`${point.year} · Zentrum (${point.x.toFixed(3)}, ${point.y.toFixed(3)})`}</title>
+              </circle>
+              <text
+                x={sx(point.x) + 12}
+                y={sy(point.y) - 10}
+                className="fill-slate-700 text-xs font-semibold dark:fill-mdn-dark-text"
+              >
+                {point.year}
+              </text>
+            </g>
+          ))}
+        </svg>
+      </div>
+      <DriftLegend
+        title="Jahrgänge"
+        items={years.map((year) => ({
+          label: String(year),
+          color: yearColor(year, years),
+        }))}
+      />
+    </Card>
+  );
+}
+
+export function DriftYearSimilarityHeatmap({
+  matrix,
+}: {
+  matrix: DriftYearSimilarityMatrix;
+}) {
+  const years = matrix.years;
+  const values = matrix.matrix.flat();
+  const min = Math.min(...values, 0);
+  const max = Math.max(...values, 1);
+  return (
+    <Card
+      title="Jahrgangs-Ähnlichkeitsmatrix"
+      eyebrow="Nähe zwischen Jahrgängen"
+      description="Diese Ansicht zeigt, welche Jahrgänge sich insgesamt ähnlich sind."
+    >
+      <div className="overflow-x-auto">
+        <div
+          className="min-w-[680px] rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]"
+          style={{
+            display: "grid",
+            gridTemplateColumns: `84px repeat(${years.length}, minmax(72px, 1fr))`,
+            gap: "8px",
+          }}
+        >
+          <div aria-hidden="true" />
+          {years.map((year) => (
+            <div
+              key={`x-${year}`}
+              className="text-center text-xs font-semibold tabular-nums text-slate-600 dark:text-mdn-dark-muted"
+            >
+              {year}
+            </div>
+          ))}
+          {matrix.matrix.map((row, yIndex) => (
+            <FragmentRow key={`row-${years[yIndex]}`}>
+              <div className="flex items-center justify-end pr-2 text-xs font-semibold tabular-nums text-slate-600 dark:text-mdn-dark-muted">
+                {years[yIndex]}
+              </div>
+              {row.map((value, xIndex) => {
+                const t = heatRatio(value, min, max);
+                return (
+                  <div
+                    key={`${xIndex}-${yIndex}`}
+                    className="flex h-16 items-center justify-center rounded-2xl text-sm font-semibold tabular-nums shadow-sm"
+                    style={{
+                      backgroundColor: heatColor(value, min, max),
+                      color: heatTextColor(t),
+                    }}
+                    title={`${years[yIndex]} ↔ ${years[xIndex]}: ${value.toFixed(3)}`}
+                  >
+                    {value.toFixed(2)}
+                  </div>
+                );
+              })}
+            </FragmentRow>
+          ))}
+        </div>
+      </div>
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-mdn-dark-muted">
+        <span>niedrig</span>
+        <span
+          className="h-3 w-40 rounded-full"
+          style={{ background: "linear-gradient(90deg, #dbeafe, #1d4ed8)" }}
+        />
+        <span>hoch</span>
+      </div>
+    </Card>
+  );
+}
+
+export function DriftOutlierChart({ stats }: { stats: DriftYearStats }) {
+  const maxValue = Math.max(1, ...stats.years.map((year) => year.outlierCount));
+  return (
+    <Card
+      title="Randpunkte pro Jahr"
+      eyebrow="Clusterbindung"
+      description="Diese Ansicht zeigt, in welchen Jahrgängen besonders viele Lösungen am Rand bestehender Lösungsmuster liegen."
+    >
+      <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+        <div className="overflow-x-auto">
+          <div className="flex min-w-[680px] items-end gap-4 border-b border-slate-200 pb-4 dark:border-mdn-dark-border">
+            {stats.years.map((yearStat) => {
+              const height = `${Math.max(4, (yearStat.outlierCount / maxValue) * 100)}%`;
+              return (
+                <div
+                  key={yearStat.year}
+                  className="flex min-w-[96px] flex-1 flex-col items-center gap-2"
+                >
+                  <div className="flex h-52 items-end">
+                    <div
+                      className="w-16 rounded-t-2xl bg-slate-400 dark:bg-slate-500"
+                      style={{ height }}
+                      title={`${yearStat.year}: ${yearStat.outlierCount} Randpunkte`}
+                    />
+                  </div>
+                  <div className="text-center">
+                    <div className="text-sm font-semibold tabular-nums text-slate-900 dark:text-mdn-dark-text">
+                      {yearStat.outlierCount}
+                    </div>
+                    <div className="text-xs font-medium tabular-nums text-slate-500 dark:text-mdn-dark-muted">
+                      {yearStat.year}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+        <div className="mt-3 text-xs text-slate-500 dark:text-mdn-dark-muted">
+          y-Achse: Anzahl der Randpunkte.
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+export function DriftClusterSummaryTable({
+  clusters,
+  years,
+}: {
+  clusters: DriftClusters;
+  years: number[];
+}) {
+  const ordered = orderedClusters(clusters.clusters);
+  return (
+    <Card
+      title="Cluster Summary"
+      eyebrow="Cluster und Jahrgänge"
+      description="Diese Tabelle fasst die wichtigsten Cluster und ihre Jahresverteilung zusammen."
+    >
+      <div className="overflow-x-auto">
+        <table className="docs-table">
+          <thead>
+            <tr>
+              <th>Cluster</th>
+              <th>Größe</th>
+              <th>Dominanter Jahrgang</th>
+              <th>Jahresverteilung</th>
+              <th>Status</th>
+              <th>Beispiele</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ordered.map((cluster) => (
+              <tr key={cluster.clusterId}>
+                <td>
+                  <span className="inline-flex items-center gap-2 font-semibold text-slate-900 dark:text-mdn-dark-text">
+                    <span
+                      className="h-3 w-3 rounded-full"
+                      style={{
+                        backgroundColor: clusterColor(
+                          cluster.clusterId,
+                          ordered,
+                        ),
+                      }}
+                    />
+                    {cluster.clusterId}
+                  </span>
+                </td>
+                <td>{cluster.size}</td>
+                <td>{cluster.dominantYear ?? "-"}</td>
+                <td>
+                  <YearDistributionBars cluster={cluster} years={years} />
+                </td>
+                <td>
+                  <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:bg-[#2a2d30] dark:text-mdn-dark-muted">
+                    {clusterStatus(cluster)}
+                  </span>
+                </td>
+                <td>
+                  <div className="max-w-[360px] break-words text-xs leading-5 text-slate-600 dark:text-mdn-dark-muted">
+                    {cluster.exemplarSubmissions?.slice(0, 3).join(", ") || "-"}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </Card>
+  );
+}
+
+export function DriftSubmissionDetailPanel({
+  point,
+  neighbors,
+}: {
+  point: DriftProjectionPoint | null;
+  neighbors?: DriftNeighbor[];
+}) {
+  return (
+    <Card
+      title="Submission Detail"
+      eyebrow="Punktauswahl"
+      description="Beim Klick auf einen Punkt erscheinen hier Jahrgang, Cluster und nächste Nachbarn."
+    >
+      {!point ? (
+        <div className="rounded-2xl border border-dashed border-slate-250 bg-slate-25 p-6 text-sm text-slate-500 dark:border-mdn-dark-border dark:bg-[#202326] dark:text-mdn-dark-muted">
+          Noch kein Punkt ausgewählt.
+        </div>
+      ) : (
+        <div className="grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+            <dl className="space-y-3 text-sm">
+              <DetailRow label="submissionId" value={point.submissionId} />
+              <DetailRow label="year" value={String(point.year)} />
+              <DetailRow label="clusterId" value={point.clusterId} />
+              <DetailRow
+                label="Randwert"
+                value={(point.outlierScore ?? 0).toFixed(3)}
+              />
+            </dl>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+            <div className="mb-3 text-sm font-semibold text-slate-900 dark:text-mdn-dark-text">
+              Nächste Nachbarn
+            </div>
+            {neighbors?.length ? (
+              <div className="space-y-2">
+                {neighbors.map((neighbor) => (
+                  <div
+                    key={neighbor.submissionId}
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm dark:bg-[#2a2d30]"
+                  >
+                    <span className="font-medium text-slate-900 dark:text-mdn-dark-text">
+                      {neighbor.submissionId}
+                    </span>
+                    <span className="text-slate-600 dark:text-mdn-dark-muted">
+                      {neighbor.year} · {neighbor.clusterId} ·{" "}
+                      {neighbor.similarity.toFixed(3)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="text-sm text-slate-500 dark:text-mdn-dark-muted">
+                Keine Nachbarn gespeichert.
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
+  );
+}
+
+export function DriftLegend({
+  title,
+  items,
+}: {
+  title: string;
+  items: { label: string; color: string; shape?: string }[];
+}) {
+  return (
+    <div className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+      <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+        {title}
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {items.map((item) => (
+          <span
+            key={`${item.label}-${item.shape ?? "swatch"}`}
+            className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-700 dark:border-mdn-dark-border dark:bg-[#212426] dark:text-mdn-dark-muted"
+          >
+            <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
+              <Shape
+                shape={item.shape ?? "circle"}
+                x={9}
+                y={9}
+                size={7}
+                fill={item.color}
+                stroke={item.color}
+              />
+            </svg>
+            {item.label}
+          </span>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ScatterPlot({
+  mode,
+  points,
+  allPoints,
+  years,
+  clusters,
+  selectedId,
+  onSelect,
+  showNeighbors,
+  neighborIds,
+}: MapProps & { mode: "year" | "cluster" }) {
+  const width = 760;
+  const height = 460;
+  const margin = { top: 24, right: 26, bottom: 42, left: 46 };
+  const bounds = boundsFor(allPoints.length ? allPoints : points);
+  const sx = (x: number) =>
+    scale(x, bounds.minX, bounds.maxX, margin.left, width - margin.right);
+  const sy = (y: number) =>
+    scale(y, bounds.minY, bounds.maxY, height - margin.bottom, margin.top);
+  const neighborPairs =
+    showNeighbors && selectedId && neighborIds
+      ? points.filter(
+          (point) =>
+            point.submissionId === selectedId ||
+            neighborIds.has(point.submissionId),
+        )
+      : [];
+  const selected =
+    points.find((point) => point.submissionId === selectedId) ?? null;
+
+  return (
+    <div className="overflow-x-auto">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="min-w-[720px] rounded-2xl border border-slate-200 bg-white dark:border-mdn-dark-border dark:bg-[#202326]"
+      >
+        <Grid width={width} height={height} margin={margin} />
+        {showNeighbors && selected
+          ? neighborPairs
+              .filter((point) => point.submissionId !== selected.submissionId)
+              .map((point) => (
+                <line
+                  key={`${selected.submissionId}-${point.submissionId}`}
+                  x1={sx(selected.x)}
+                  y1={sy(selected.y)}
+                  x2={sx(point.x)}
+                  y2={sy(point.y)}
+                  stroke="currentColor"
+                  strokeWidth={1.5}
+                  strokeDasharray="5 5"
+                  className="text-slate-400 dark:text-mdn-dark-muted"
+                />
+              ))
+          : null}
+        {points.map((point) => {
+          const isSelected = selectedId === point.submissionId;
+          const isNeighbor = Boolean(
+            showNeighbors && neighborIds?.has(point.submissionId),
+          );
+          const color =
+            mode === "year"
+              ? yearColor(point.year, years)
+              : clusterColor(point.clusterId, clusters);
+          return (
+            <g
+              key={point.submissionId}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelect(point)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") onSelect(point);
+              }}
+              className="cursor-pointer outline-none"
+            >
+              <Shape
+                shape={point.shapeKey}
+                x={sx(point.x)}
+                y={sy(point.y)}
+                size={isSelected ? 9 : isNeighbor ? 8 : 6}
+                fill={color}
+                stroke={
+                  isSelected ? "#0f172a" : isNeighbor ? "#111827" : "#ffffff"
+                }
+                opacity={isSelected || isNeighbor ? 1 : 0.76}
+              />
+              <title>{`${point.label}\nsubmissionId: ${point.submissionId}\nyear: ${point.year}\nclusterId: ${point.clusterId}\nRandwert: ${(point.outlierScore ?? 0).toFixed(3)}`}</title>
+            </g>
+          );
+        })}
+        <text
+          x={margin.left}
+          y={height - 12}
+          className="fill-slate-500 text-xs dark:fill-mdn-dark-muted"
+        >
+          Projektion X
+        </text>
+        <text
+          x={12}
+          y={margin.top + 6}
+          className="fill-slate-500 text-xs dark:fill-mdn-dark-muted"
+        >
+          Y
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function Shape({
+  shape,
+  x,
+  y,
+  size,
+  fill,
+  stroke,
+  opacity = 1,
+}: {
+  shape: string;
+  x: number;
+  y: number;
+  size: number;
+  fill: string;
+  stroke: string;
+  opacity?: number;
+}) {
+  const strokeWidth = 1.8;
+  if (shape === "square")
+    return (
+      <rect
+        x={x - size}
+        y={y - size}
+        width={size * 2}
+        height={size * 2}
+        rx={3}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        opacity={opacity}
+      />
+    );
+  if (shape === "triangle")
+    return (
+      <polygon
+        points={`${x},${y - size - 2} ${x - size - 1},${y + size} ${x + size + 1},${y + size}`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        opacity={opacity}
+      />
+    );
+  if (shape === "diamond")
+    return (
+      <polygon
+        points={`${x},${y - size - 2} ${x + size + 2},${y} ${x},${y + size + 2} ${x - size - 2},${y}`}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        opacity={opacity}
+      />
+    );
+  if (shape === "star")
+    return (
+      <polygon
+        points={starPoints(x, y, size + 3, size * 0.5)}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        opacity={opacity}
+      />
+    );
+  if (shape === "x") {
+    return (
+      <g
+        opacity={opacity}
+        stroke={fill}
+        strokeWidth={2.5}
+        strokeLinecap="round"
+      >
+        <line x1={x - size} y1={y - size} x2={x + size} y2={y + size} />
+        <line x1={x + size} y1={y - size} x2={x - size} y2={y + size} />
+      </g>
+    );
+  }
+  if (shape === "plus") {
+    return (
+      <g
+        opacity={opacity}
+        stroke={fill}
+        strokeWidth={2.5}
+        strokeLinecap="round"
+      >
+        <line x1={x - size} y1={y} x2={x + size} y2={y} />
+        <line x1={x} y1={y - size} x2={x} y2={y + size} />
+      </g>
+    );
+  }
+  if (shape === "pentagon")
+    return (
+      <polygon
+        points={regularPolygonPoints(x, y, size + 2, 5, -Math.PI / 2)}
+        fill={fill}
+        stroke={stroke}
+        strokeWidth={strokeWidth}
+        opacity={opacity}
+      />
+    );
+  return (
+    <circle
+      cx={x}
+      cy={y}
+      r={size}
+      fill={fill}
+      stroke={stroke}
+      strokeWidth={strokeWidth}
+      opacity={opacity}
+    />
+  );
+}
+
+function Grid({
+  width,
+  height,
+  margin,
+}: {
+  width: number;
+  height: number;
+  margin: { top: number; right: number; bottom: number; left: number };
+}) {
+  const vertical = Array.from(
+    { length: 6 },
+    (_, index) =>
+      margin.left + (index * (width - margin.left - margin.right)) / 5,
+  );
+  const horizontal = Array.from(
+    { length: 5 },
+    (_, index) =>
+      margin.top + (index * (height - margin.top - margin.bottom)) / 4,
+  );
+  return (
+    <g>
+      {vertical.map((x) => (
+        <line
+          key={`v-${x}`}
+          x1={x}
+          x2={x}
+          y1={margin.top}
+          y2={height - margin.bottom}
+          stroke="currentColor"
+          className="text-slate-100 dark:text-[#2a2d30]"
+        />
+      ))}
+      {horizontal.map((y) => (
+        <line
+          key={`h-${y}`}
+          x1={margin.left}
+          x2={width - margin.right}
+          y1={y}
+          y2={y}
+          stroke="currentColor"
+          className="text-slate-100 dark:text-[#2a2d30]"
+        />
+      ))}
+      <line
+        x1={margin.left}
+        x2={width - margin.right}
+        y1={height - margin.bottom}
+        y2={height - margin.bottom}
+        stroke="currentColor"
+        className="text-slate-300 dark:text-mdn-dark-border"
+      />
+      <line
+        x1={margin.left}
+        x2={margin.left}
+        y1={margin.top}
+        y2={height - margin.bottom}
+        stroke="currentColor"
+        className="text-slate-300 dark:text-mdn-dark-border"
+      />
+    </g>
+  );
+}
+
+function DetailRow({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <dt className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+        {label}
+      </dt>
+      <dd className="mt-1 break-words font-medium text-slate-900 dark:text-mdn-dark-text">
+        {value}
+      </dd>
+    </div>
+  );
+}
+
+function FragmentRow({ children }: { children: ReactNode }) {
+  return <>{children}</>;
+}
+
+function YearDistributionBars({
+  cluster,
+  years,
+}: {
+  cluster: DriftCluster;
+  years: number[];
+}) {
+  const counts = years.map(
+    (year) => cluster.yearDistribution[String(year)] ?? 0,
+  );
+  const maxValue = Math.max(1, ...counts);
+  return (
+    <div className="min-w-[300px] space-y-1.5">
+      {years.map((year) => {
+        const value = cluster.yearDistribution[String(year)] ?? 0;
+        const width =
+          value > 0 ? `${Math.max(4, (value / maxValue) * 100)}%` : "0%";
+        return (
+          <div
+            key={year}
+            className="grid grid-cols-[76px_minmax(130px,1fr)] items-center gap-3 text-xs"
+            title={`${year}: ${value}`}
+          >
+            <span className="whitespace-nowrap font-semibold tabular-nums text-slate-500 dark:text-mdn-dark-muted">
+              {year} · {value}
+            </span>
+            <span className="h-2.5 overflow-hidden rounded-full bg-slate-100 dark:bg-[#2a2d30]">
+              <span
+                className="block h-full rounded-full"
+                style={{
+                  width,
+                  backgroundColor: yearColor(year, years),
+                  opacity: value > 0 ? 0.9 : 0.2,
+                }}
+              />
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function boundsFor(items: { x: number; y: number }[]): Bounds {
+  if (!items.length) return { minX: -1, maxX: 1, minY: -1, maxY: 1 };
+  const xs = items.map((item) => item.x);
+  const ys = items.map((item) => item.y);
+  const minX = Math.min(...xs);
+  const maxX = Math.max(...xs);
+  const minY = Math.min(...ys);
+  const maxY = Math.max(...ys);
+  const padX = Math.max(0.08, (maxX - minX) * 0.08);
+  const padY = Math.max(0.08, (maxY - minY) * 0.08);
+  return {
+    minX: minX - padX,
+    maxX: maxX + padX,
+    minY: minY - padY,
+    maxY: maxY + padY,
+  };
+}
+
+function scale(
+  value: number,
+  domainMin: number,
+  domainMax: number,
+  rangeMin: number,
+  rangeMax: number,
+) {
+  if (Math.abs(domainMax - domainMin) < 1e-9) return (rangeMin + rangeMax) / 2;
+  return (
+    rangeMin +
+    ((value - domainMin) / (domainMax - domainMin)) * (rangeMax - rangeMin)
+  );
+}
+
+function yearColor(year: number, years: number[]) {
+  const index = Math.max(0, years.indexOf(year));
+  return YEAR_COLORS[index % YEAR_COLORS.length];
+}
+
+function clusterColor(clusterId: string, clusters: DriftCluster[]) {
+  if (clusterId === "unclustered") return BOUNDARY_COLOR;
+  const ordered = orderedClusters(clusters);
+  const index = Math.max(
+    0,
+    ordered.findIndex((cluster) => cluster.clusterId === clusterId),
+  );
+  return CLUSTER_COLORS[index % CLUSTER_COLORS.length];
+}
+
+function orderedClusters(clusters: DriftCluster[]) {
+  return [...clusters].sort((a, b) =>
+    a.clusterId.localeCompare(b.clusterId, undefined, { numeric: true }),
+  );
+}
+
+function yearShapeForPoint(points: DriftProjectionPoint[], year: number) {
+  return points.find((point) => point.year === year)?.shapeKey ?? "circle";
+}
+
+function clusterStatus(cluster: DriftCluster) {
+  if (cluster.clusterId === "unclustered") return "mixed";
+  if (cluster.isNewCluster) return "new";
+  if (cluster.isDecliningCluster) return "declining";
+  const nonZeroYears = Object.values(cluster.yearDistribution).filter(
+    (value) => value > 0,
+  ).length;
+  return nonZeroYears >= 3 ? "stable" : "mixed";
+}
+
+function heatRatio(value: number, min: number, max: number) {
+  return max - min < 1e-9
+    ? 1
+    : Math.max(0, Math.min(1, (value - min) / (max - min)));
+}
+
+function heatColor(value: number, min: number, max: number) {
+  const t = heatRatio(value, min, max);
+  const light = Math.round(226 - t * 150);
+  const mid = Math.round(232 - t * 120);
+  const dark = Math.round(255 - t * 80);
+  return `rgb(${light}, ${mid}, ${dark})`;
+}
+
+function heatTextColor(t: number) {
+  return t > 0.55 ? "#ffffff" : "#1e293b";
+}
+
+function starPoints(cx: number, cy: number, outer: number, inner: number) {
+  const points = [];
+  for (let index = 0; index < 10; index += 1) {
+    const radius = index % 2 === 0 ? outer : inner;
+    const angle = -Math.PI / 2 + (index * Math.PI) / 5;
+    points.push(
+      `${cx + Math.cos(angle) * radius},${cy + Math.sin(angle) * radius}`,
+    );
+  }
+  return points.join(" ");
+}
+
+function regularPolygonPoints(
+  cx: number,
+  cy: number,
+  radius: number,
+  sides: number,
+  offset = 0,
+) {
+  return Array.from({ length: sides }, (_, index) => {
+    const angle = offset + (index * Math.PI * 2) / sides;
+    return `${cx + Math.cos(angle) * radius},${cy + Math.sin(angle) * radius}`;
+  }).join(" ");
+}
