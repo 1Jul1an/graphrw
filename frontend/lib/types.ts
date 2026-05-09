@@ -10,9 +10,9 @@ export const ENGINE_OPTIONS = [
 export type EngineKey = (typeof ENGINE_OPTIONS)[number]["key"];
 
 export const EMBEDDING_MODEL_OPTIONS = [
-  { key: "quality", label: "Quality", model: "qwen3-embedding:8b", description: "stärker, aber schwerer" },
+  { key: "quality", label: "Quality", model: "qwen3-embedding:8b", description: "Umfangreicher" },
   { key: "balanced", label: "Balanced", model: "qwen3-embedding:4b", description: "Default für Engine2" },
-  { key: "fast", label: "Fast", model: "qwen3-embedding:0.6b", description: "leicht und schnell" },
+  { key: "fast", label: "Fast", model: "qwen3-embedding:0.6b", description: "Lightweight" },
 ] as const;
 
 export type EmbeddingModelKey = (typeof EMBEDDING_MODEL_OPTIONS)[number]["key"];
