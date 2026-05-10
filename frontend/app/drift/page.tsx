@@ -15,6 +15,7 @@ import {
   DriftWorkspaceOverviewCards,
   DriftWorkspaceSummaryTable,
   DriftWorkspaceTransitionHeatmap,
+  DriftSubmissionDeepDiveDashboard,
   DriftSubmissionDetailPanel,
   DriftSubmissionExplorer,
   DriftYearClusterSubmissionMatrix,
@@ -40,7 +41,7 @@ const DRIFT_RUN_POLL_INITIAL_MS = 2_000;
 const DRIFT_RUN_POLL_MAX_MS = 20_000;
 const DRIFT_RUN_POLL_BACKOFF_MS = 4_000;
 
-type WorkspaceTabKey = "lab" | "all";
+type WorkspaceTabKey = "lab" | "all" | "deep";
 
 type DriftAssignment = {
   assignmentKey: string;
@@ -70,7 +71,7 @@ export default function DriftPage() {
   const [storedBundles, setStoredBundles] = useState<DriftBundle[]>([]);
   const [importReports, setImportReports] = useState<DriftBundle[]>([]);
   const [embeddingModel, setEmbeddingModel] =
-    useState<EmbeddingModelName>("qwen3-embedding:0.6b");
+    useState<EmbeddingModelName>("qwen3-embedding:4b");
   const [assignments, setAssignments] = useState<DriftAssignment[]>([]);
   const [run, setRun] = useState<DriftRunPayload | null>(null);
   const [artifacts, setArtifacts] = useState<DriftArtifacts | null>(null);
@@ -635,6 +636,11 @@ export default function DriftPage() {
             onClick={() => setActiveTab("all")}
             label="Drift all Labs aller Jahre"
           />
+          <TabButton
+            active={activeTab === "deep"}
+            onClick={() => setActiveTab("deep")}
+            label="Deep Dive Jahrgänge"
+          />
         </div>
 
         {activeTab === "lab" ? (
@@ -928,7 +934,7 @@ export default function DriftPage() {
           </div>
         )}
           </>
-        ) : (
+        ) : activeTab === "all" ? (
           <DriftAllLabsWorkspace
             embeddingModel={embeddingModel}
             onEmbeddingModelChange={setEmbeddingModel}
@@ -947,12 +953,129 @@ export default function DriftPage() {
             onImport={handleWorkspaceImport}
             onRun={handleWorkspaceRun}
           />
+        ) : (
+          <DriftDeepDiveTab
+            assignmentKey={assignmentKey}
+            onAssignmentKeyChange={setAssignmentKey}
+            assignments={assignments}
+            embeddingModel={embeddingModel}
+            onEmbeddingModelChange={setEmbeddingModel}
+            artifacts={artifacts}
+            run={run}
+            selectedId={selectedId}
+            onSelect={selectPoint}
+            onRefresh={() => loadLatest(assignmentKey, embeddingModel)}
+          />
         )}
       </main>
     </div>
   );
 }
 
+
+
+
+function DriftDeepDiveTab({
+  assignmentKey,
+  onAssignmentKeyChange,
+  assignments,
+  embeddingModel,
+  onEmbeddingModelChange,
+  artifacts,
+  run,
+  selectedId,
+  onSelect,
+  onRefresh,
+}: {
+  assignmentKey: string;
+  onAssignmentKeyChange: (value: string) => void;
+  assignments: DriftAssignment[];
+  embeddingModel: EmbeddingModelName;
+  onEmbeddingModelChange: (model: EmbeddingModelName) => void;
+  artifacts: DriftArtifacts | null;
+  run: DriftRunPayload | null;
+  selectedId: string | null;
+  onSelect: (point: DriftProjectionPoint) => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="space-y-6">
+      <Card
+        title="Deep Dive laden"
+        eyebrow="Jahrgangsperspektive"
+        description="Diese Ansicht nutzt einen veröffentlichten Drift-Run eines einzelnen Labs und macht die Submissions pro Jahrgang direkt sichtbar. Andere Jahrgänge kannst du als Vergleich zuschalten."
+      >
+        <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_320px_auto] lg:items-end">
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              assignmentKey
+            </span>
+            <input
+              value={assignmentKey}
+              onChange={(event) => onAssignmentKeyChange(event.target.value)}
+              list="drift-deep-assignment-keys"
+              className="w-full rounded-2xl border border-slate-250 bg-white px-4 py-3 text-sm outline-none transition focus:border-brand-300 dark:border-mdn-dark-border dark:bg-[#202326]"
+              placeholder="prog2_lab2"
+            />
+            <datalist id="drift-deep-assignment-keys">
+              {assignments.map((item) => (
+                <option key={item.assignmentKey} value={item.assignmentKey} />
+              ))}
+            </datalist>
+          </label>
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              Embedding-Modell
+            </span>
+            <select
+              value={embeddingModel}
+              onChange={(event) => onEmbeddingModelChange(event.target.value as EmbeddingModelName)}
+              className="w-full rounded-2xl border border-slate-250 bg-white px-4 py-3 text-sm outline-none transition focus:border-brand-300 dark:border-mdn-dark-border dark:bg-[#202326]"
+            >
+              {EMBEDDING_MODEL_OPTIONS.map((option) => (
+                <option key={option.model} value={option.model}>
+                  {option.label} · {option.model}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="rounded-2xl bg-slate-950 px-5 py-3 text-sm font-semibold text-white transition hover:bg-slate-800 dark:bg-mdn-dark-text dark:text-mdn-dark-bg"
+          >
+            Run laden
+          </button>
+        </div>
+        {run ? (
+          <div className="mt-4 flex flex-wrap gap-3 text-sm text-slate-600 dark:text-mdn-dark-muted">
+            <StatusMetric label="Run" value={run.runId} />
+            <StatusMetric label="Status" value={run.status} />
+            <StatusMetric label="Modell" value={run.embeddingModel ?? embeddingModel} />
+          </div>
+        ) : null}
+      </Card>
+
+      {!artifacts ? (
+        <Card
+          title="Kein Deep-Dive geladen"
+          eyebrow="Submissions"
+          description="Wähle ein Lab mit veröffentlichtem Drift-Run oder berechne es zuerst im Tab Drift Lab pro Jahr."
+        >
+          <div className="text-sm text-slate-600 dark:text-mdn-dark-muted">
+            Ohne veröffentlichte Drift-Artefakte gibt es keine Projektion, in der Submissions dargestellt werden können.
+          </div>
+        </Card>
+      ) : (
+        <DriftSubmissionDeepDiveDashboard
+          artifacts={artifacts}
+          selectedId={selectedId}
+          onSelect={onSelect}
+        />
+      )}
+    </div>
+  );
+}
 
 function TabButton({ active, onClick, label }: { active: boolean; onClick: () => void; label: string }) {
   return (

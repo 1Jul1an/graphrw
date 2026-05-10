@@ -1122,6 +1122,693 @@ export function DriftSubmissionExplorer({
   );
 }
 
+
+
+export function DriftSubmissionDeepDiveDashboard({
+  artifacts,
+  selectedId,
+  onSelect,
+}: {
+  artifacts: {
+    overview: DriftOverview;
+    projection: { points: DriftProjectionPoint[] };
+    clusters: DriftClusters;
+    neighbors?: DriftNeighbors;
+  };
+  selectedId: string | null;
+  onSelect: (point: DriftProjectionPoint) => void;
+}) {
+  const years = artifacts.overview.includedYears;
+  const clusters = orderedClusters(artifacts.clusters.clusters);
+  const [focusYearValue, setFocusYearValue] = useState<string>(String(years[0] ?? ""));
+  const [comparisonYears, setComparisonYears] = useState<Set<number>>(new Set());
+  const [activeClusters, setActiveClusters] = useState<Set<string>>(new Set());
+  const [labelMode, setLabelMode] = useState<"focus" | "selected" | "all" | "none">("focus");
+  const [showNeighborLines, setShowNeighborLines] = useState(true);
+  const [query, setQuery] = useState("");
+
+  const focusYear = years.includes(Number(focusYearValue)) ? Number(focusYearValue) : years[0] ?? null;
+  const selectedPoint = selectedId
+    ? artifacts.projection.points.find((point) => point.submissionId === selectedId) ?? null
+    : null;
+  const neighborRows = selectedId
+    ? artifacts.neighbors?.items.find((item) => item.submissionId === selectedId)?.neighbors ?? []
+    : [];
+  const neighborIds = new Set(neighborRows.map((neighbor) => neighbor.submissionId));
+
+  const visibleYearSet = useMemo(() => {
+    const next = new Set<number>();
+    if (focusYear !== null) next.add(focusYear);
+    for (const item of comparisonYears) {
+      if (years.includes(item)) next.add(item);
+    }
+    return next;
+  }, [focusYear, comparisonYears, years.join(",")]);
+
+  const visiblePoints = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return artifacts.projection.points
+      .filter((point) => (visibleYearSet.size ? visibleYearSet.has(point.year) : true))
+      .filter((point) => (activeClusters.size ? activeClusters.has(point.clusterId) : true))
+      .filter((point) => {
+        if (!needle) return true;
+        return (
+          point.submissionId.toLowerCase().includes(needle) ||
+          point.label.toLowerCase().includes(needle) ||
+          String(point.year).includes(needle) ||
+          point.clusterId.toLowerCase().includes(needle)
+        );
+      })
+      .sort(compareProjectionPoints);
+  }, [artifacts.projection.points, visibleYearSet, activeClusters, query]);
+
+  const focusPoints = useMemo(
+    () => visiblePoints.filter((point) => focusYear === null || point.year === focusYear),
+    [visiblePoints, focusYear],
+  );
+
+  function toggleComparisonYear(year: number) {
+    setComparisonYears((current) => {
+      const next = new Set(current);
+      if (next.has(year)) next.delete(year);
+      else next.add(year);
+      return next;
+    });
+  }
+
+  function toggleCluster(clusterId: string) {
+    setActiveClusters((current) => {
+      const next = new Set(current);
+      if (next.has(clusterId)) next.delete(clusterId);
+      else next.add(clusterId);
+      return next;
+    });
+  }
+
+  function addAllComparisonYears() {
+    setComparisonYears(new Set(years.filter((year) => year !== focusYear)));
+  }
+
+  function clearComparisonYears() {
+    setComparisonYears(new Set());
+  }
+
+  return (
+    <div className="space-y-6">
+      <Card
+        title="Jahrgang Deep Dive"
+        eyebrow="Submission-Perspektive"
+        description="Wähle einen Fokus-Jahrgang und schalte andere Jahrgänge als Vergleich dazu. Jede Submission bleibt als eigener Punkt mit Name, Jahrgang, Cluster und Position sichtbar."
+      >
+        <div className="grid gap-5 xl:grid-cols-[280px_minmax(0,1fr)_320px]">
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              Fokus-Jahrgang
+            </span>
+            <select
+              value={focusYearValue}
+              onChange={(event) => setFocusYearValue(event.target.value)}
+              className="w-full rounded-2xl border border-slate-250 bg-white px-4 py-3 text-sm outline-none transition focus:border-brand-300 dark:border-mdn-dark-border dark:bg-[#202326]"
+            >
+              {years.map((year) => (
+                <option key={year} value={String(year)}>
+                  {year}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              Vergleichsjahrgänge
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {years.map((year) => {
+                const isFocus = year === focusYear;
+                const active = isFocus || comparisonYears.has(year);
+                return (
+                  <button
+                    key={year}
+                    type="button"
+                    disabled={isFocus}
+                    onClick={() => toggleComparisonYear(year)}
+                    className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition disabled:cursor-default ${
+                      active
+                        ? "border-slate-950 bg-slate-950 text-white dark:border-mdn-dark-text dark:bg-mdn-dark-text dark:text-mdn-dark-bg"
+                        : "border-slate-250 bg-white text-slate-600 hover:bg-slate-100 dark:border-mdn-dark-border dark:bg-[#212426] dark:text-mdn-dark-muted dark:hover:bg-[#2a2d30]"
+                    }`}
+                    title={isFocus ? "Fokus-Jahrgang ist immer sichtbar" : undefined}
+                  >
+                    {year}{isFocus ? " · Fokus" : ""}
+                  </button>
+                );
+              })}
+            </div>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={addAllComparisonYears}
+                className="rounded-xl border border-slate-250 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-mdn-dark-border dark:text-mdn-dark-muted dark:hover:bg-[#2a2d30]"
+              >
+                Alle dazu
+              </button>
+              <button
+                type="button"
+                onClick={clearComparisonYears}
+                className="rounded-xl border border-slate-250 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-mdn-dark-border dark:text-mdn-dark-muted dark:hover:bg-[#2a2d30]"
+              >
+                Nur Fokus
+              </button>
+            </div>
+          </div>
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              Punktlabels
+            </div>
+            <select
+              value={labelMode}
+              onChange={(event) => setLabelMode(event.target.value as "focus" | "selected" | "all" | "none")}
+              className="w-full rounded-2xl border border-slate-250 bg-white px-4 py-3 text-sm outline-none transition focus:border-brand-300 dark:border-mdn-dark-border dark:bg-[#202326]"
+            >
+              <option value="focus">Fokus-Jahrgang beschriften</option>
+              <option value="selected">Nur Auswahl beschriften</option>
+              <option value="all">Alle sichtbaren Punkte beschriften</option>
+              <option value="none">Keine Labels</option>
+            </select>
+            <label className="mt-3 flex items-center gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-mdn-dark-border dark:bg-[#202326]">
+              <input
+                type="checkbox"
+                checked={showNeighborLines}
+                onChange={(event) => setShowNeighborLines(event.target.checked)}
+              />
+              Nachbarschaften der Auswahl anzeigen
+            </label>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-4 xl:grid-cols-[minmax(0,1fr)_340px]">
+          <div>
+            <div className="mb-2 text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              Cluster ein-/ausblenden
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {clusters.map((cluster) => {
+                const active = !activeClusters.size || activeClusters.has(cluster.clusterId);
+                return (
+                  <button
+                    key={cluster.clusterId}
+                    type="button"
+                    onClick={() => toggleCluster(cluster.clusterId)}
+                    className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                      active
+                        ? "border-slate-950 bg-white text-slate-900 dark:border-mdn-dark-text dark:bg-[#212426] dark:text-mdn-dark-text"
+                        : "border-slate-250 bg-slate-50 text-slate-400 opacity-60 dark:border-mdn-dark-border dark:bg-[#18191b] dark:text-mdn-dark-muted"
+                    }`}
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: clusterColor(cluster.clusterId, clusters) }} />
+                    {cluster.clusterId}
+                  </button>
+                );
+              })}
+              {activeClusters.size ? (
+                <button
+                  type="button"
+                  onClick={() => setActiveClusters(new Set())}
+                  className="rounded-full border border-slate-250 px-3 py-1.5 text-xs font-semibold text-slate-600 transition hover:bg-slate-100 dark:border-mdn-dark-border dark:text-mdn-dark-muted dark:hover:bg-[#2a2d30]"
+                >
+                  Alle Cluster
+                </button>
+              ) : null}
+            </div>
+          </div>
+          <label className="block">
+            <span className="mb-2 block text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              Submission suchen
+            </span>
+            <input
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              placeholder="Name, ID, Jahrgang oder Cluster"
+              className="w-full rounded-2xl border border-slate-250 bg-white px-4 py-3 text-sm outline-none transition focus:border-brand-300 dark:border-mdn-dark-border dark:bg-[#202326]"
+            />
+          </label>
+        </div>
+
+        <div className="mt-5 grid grid-cols-2 gap-3 md:grid-cols-4">
+          <DeepDiveMetric label="Fokusjahr" value={focusYear === null ? "-" : String(focusYear)} />
+          <DeepDiveMetric label="Fokus-Submissions" value={String(focusPoints.length)} />
+          <DeepDiveMetric label="sichtbare Punkte" value={String(visiblePoints.length)} />
+          <DeepDiveMetric label="Cluster sichtbar" value={String(activeClusters.size || clusters.length)} />
+        </div>
+      </Card>
+
+      <div className="grid grid-cols-1 gap-6 2xl:grid-cols-2">
+        <Card
+          title="Deep-Dive Map nach Jahrgang"
+          eyebrow="Submission-Orte"
+          description="Fokusjahrgang und Vergleichsjahrgänge liegen in derselben Projektion. Labels zeigen die Submission-Namen direkt am Punkt."
+        >
+          <DeepDiveScatterPlot
+            mode="year"
+            points={visiblePoints}
+            allPoints={artifacts.projection.points}
+            years={years}
+            clusters={clusters}
+            focusYear={focusYear}
+            selectedId={selectedId}
+            selectedPoint={selectedPoint}
+            neighborIds={neighborIds}
+            onSelect={onSelect}
+            labelMode={labelMode}
+            showNeighborLines={showNeighborLines}
+          />
+          <DriftLegend
+            title="Jahrgänge"
+            items={years.map((year) => ({
+              label: String(year),
+              color: yearColor(year, years),
+              shape: yearShapeForPoint(artifacts.projection.points, year),
+            }))}
+          />
+          <JsonDisclosure
+            title="Daten dieser Deep-Dive-Map als JSON"
+            data={{
+              view: "deep_dive_map_by_year",
+              assignmentKey: artifacts.overview.assignmentKey,
+              focusYear,
+              visibleYears: [...visibleYearSet],
+              labelMode,
+              points: visiblePoints.map(pointJson),
+            }}
+          />
+        </Card>
+
+        <Card
+          title="Deep-Dive Map nach Cluster"
+          eyebrow="Lösungsmuster"
+          description="Dieselbe Projektion, aber nach Cluster gefärbt. So sieht man, welche Submissions den jeweiligen Lösungsmustern zugeordnet sind."
+        >
+          <DeepDiveScatterPlot
+            mode="cluster"
+            points={visiblePoints}
+            allPoints={artifacts.projection.points}
+            years={years}
+            clusters={clusters}
+            focusYear={focusYear}
+            selectedId={selectedId}
+            selectedPoint={selectedPoint}
+            neighborIds={neighborIds}
+            onSelect={onSelect}
+            labelMode={labelMode}
+            showNeighborLines={showNeighborLines}
+          />
+          <div className="mt-4 grid gap-4 xl:grid-cols-2">
+            <DriftLegend
+              title="Clusterfarben"
+              items={clusters.map((cluster) => ({
+                label: cluster.clusterId,
+                color: clusterColor(cluster.clusterId, clusters),
+              }))}
+            />
+            <DriftLegend
+              title="Jahrgang-Shapes"
+              items={years.map((year) => ({
+                label: String(year),
+                color: yearColor(year, years),
+                shape: yearShapeForPoint(artifacts.projection.points, year),
+              }))}
+            />
+          </div>
+          <JsonDisclosure
+            title="Daten dieser Cluster-Map als JSON"
+            data={{
+              view: "deep_dive_map_by_cluster",
+              assignmentKey: artifacts.overview.assignmentKey,
+              focusYear,
+              visibleYears: [...visibleYearSet],
+              points: visiblePoints.map(pointJson),
+            }}
+          />
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 gap-6 2xl:grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)]">
+        <DeepDiveClusterBuckets
+          points={focusPoints}
+          clusters={clusters}
+          selectedId={selectedId}
+          onSelect={onSelect}
+        />
+        <DeepDiveSubmissionTable
+          points={visiblePoints}
+          selectedId={selectedId}
+          selectedPoint={selectedPoint}
+          neighborRows={neighborRows}
+          onSelect={onSelect}
+        />
+      </div>
+    </div>
+  );
+}
+
+function DeepDiveMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-mdn-dark-border dark:bg-[#202326]">
+      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+        {label}
+      </div>
+      <div className="mt-1 text-xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-mdn-dark-text">
+        {value}
+      </div>
+    </div>
+  );
+}
+
+function DeepDiveScatterPlot({
+  mode,
+  points,
+  allPoints,
+  years,
+  clusters,
+  focusYear,
+  selectedId,
+  selectedPoint,
+  neighborIds,
+  onSelect,
+  labelMode,
+  showNeighborLines,
+}: {
+  mode: "year" | "cluster";
+  points: DriftProjectionPoint[];
+  allPoints: DriftProjectionPoint[];
+  years: number[];
+  clusters: DriftCluster[];
+  focusYear: number | null;
+  selectedId: string | null;
+  selectedPoint: DriftProjectionPoint | null;
+  neighborIds: Set<string>;
+  onSelect: (point: DriftProjectionPoint) => void;
+  labelMode: "focus" | "selected" | "all" | "none";
+  showNeighborLines: boolean;
+}) {
+  const width = 920;
+  const height = 560;
+  const margin = { top: 28, right: 36, bottom: 46, left: 52 };
+  const bounds = boundsFor(allPoints.length ? allPoints : points);
+  const sx = (x: number) => scale(x, bounds.minX, bounds.maxX, margin.left, width - margin.right);
+  const sy = (y: number) => scale(y, bounds.minY, bounds.maxY, height - margin.bottom, margin.top);
+  const selectedIsVisible = Boolean(selectedPoint && points.some((point) => point.submissionId === selectedPoint.submissionId));
+
+  function shouldLabel(point: DriftProjectionPoint) {
+    if (labelMode === "none") return false;
+    if (labelMode === "all") return true;
+    if (labelMode === "selected") return point.submissionId === selectedId || neighborIds.has(point.submissionId);
+    return point.year === focusYear || point.submissionId === selectedId;
+  }
+
+  return (
+    <div className="overflow-x-auto">
+      <svg
+        viewBox={`0 0 ${width} ${height}`}
+        className="min-w-[860px] rounded-2xl border border-slate-200 bg-white dark:border-mdn-dark-border dark:bg-[#202326]"
+      >
+        <Grid width={width} height={height} margin={margin} />
+        {showNeighborLines && selectedPoint && selectedIsVisible
+          ? points
+              .filter((point) => neighborIds.has(point.submissionId))
+              .map((point, index) => (
+                <line
+                  key={`${selectedPoint.submissionId}-${point.submissionId}-${index}`}
+                  x1={sx(selectedPoint.x)}
+                  y1={sy(selectedPoint.y)}
+                  x2={sx(point.x)}
+                  y2={sy(point.y)}
+                  stroke="currentColor"
+                  strokeWidth={1.4}
+                  strokeDasharray="5 5"
+                  className="text-slate-400 dark:text-mdn-dark-muted"
+                />
+              ))
+          : null}
+        {points.map((point, index) => {
+          const isSelected = selectedId === point.submissionId;
+          const isNeighbor = neighborIds.has(point.submissionId);
+          const isFocus = focusYear === null || point.year === focusYear;
+          const color = mode === "year" ? yearColor(point.year, years) : clusterColor(point.clusterId, clusters);
+          const pointOpacity = isFocus || isSelected || isNeighbor ? 1 : 0.34;
+          return (
+            <g
+              key={`${point.submissionId}-${point.year}-${point.clusterId}-${index}`}
+              role="button"
+              tabIndex={0}
+              onClick={() => onSelect(point)}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") onSelect(point);
+              }}
+              className="cursor-pointer outline-none"
+            >
+              <Shape
+                shape={point.shapeKey}
+                x={sx(point.x)}
+                y={sy(point.y)}
+                size={isSelected ? 10 : isNeighbor ? 8.5 : isFocus ? 7 : 5.5}
+                fill={color}
+                stroke={isSelected ? "#0f172a" : isNeighbor ? "#111827" : "#ffffff"}
+                opacity={pointOpacity}
+              />
+              {shouldLabel(point) ? (
+                <g opacity={isFocus || isSelected || isNeighbor ? 1 : 0.62}>
+                  <rect
+                    x={sx(point.x) + 9}
+                    y={sy(point.y) - 15}
+                    width={Math.min(168, Math.max(52, deepDiveLabel(point).length * 6.3 + 10))}
+                    height={18}
+                    rx={8}
+                    fill="rgba(255,255,255,0.82)"
+                    stroke="rgba(148,163,184,0.45)"
+                  />
+                  <text
+                    x={sx(point.x) + 14}
+                    y={sy(point.y) - 2}
+                    className="fill-slate-800 text-[10px] font-semibold dark:fill-mdn-dark-text"
+                  >
+                    {truncateLabel(deepDiveLabel(point), 24)}
+                  </text>
+                </g>
+              ) : null}
+              <title>{`${point.label}\nsubmissionId: ${point.submissionId}\nyear: ${point.year}\nclusterId: ${point.clusterId}\nPosition: (${point.x.toFixed(4)}, ${point.y.toFixed(4)})\nRandwert: ${(point.outlierScore ?? 0).toFixed(3)}`}</title>
+            </g>
+          );
+        })}
+        <text x={margin.left} y={height - 14} className="fill-slate-500 text-xs dark:fill-mdn-dark-muted">
+          Projektion X
+        </text>
+        <text x={14} y={margin.top + 6} className="fill-slate-500 text-xs dark:fill-mdn-dark-muted">
+          Y
+        </text>
+      </svg>
+    </div>
+  );
+}
+
+function DeepDiveClusterBuckets({
+  points,
+  clusters,
+  selectedId,
+  onSelect,
+}: {
+  points: DriftProjectionPoint[];
+  clusters: DriftCluster[];
+  selectedId: string | null;
+  onSelect: (point: DriftProjectionPoint) => void;
+}) {
+  const grouped = useMemo(() => {
+    const map = new Map<string, DriftProjectionPoint[]>();
+    for (const point of points) {
+      const bucket = map.get(point.clusterId) ?? [];
+      bucket.push(point);
+      map.set(point.clusterId, bucket);
+    }
+    for (const bucket of map.values()) bucket.sort(compareProjectionPoints);
+    return map;
+  }, [points]);
+  const ordered = orderedClusters(clusters).filter((cluster) => grouped.has(cluster.clusterId));
+
+  return (
+    <Card
+      title="Fokus-Jahrgang nach Cluster"
+      eyebrow="Submission-Buckets"
+      description="Diese Liste zeigt, welche Submissions des Fokus-Jahrgangs in welchem Cluster liegen. Ein Klick springt zur Submission in den Maps."
+    >
+      {ordered.length ? (
+        <div className="space-y-3">
+          {ordered.map((cluster) => {
+            const bucket = grouped.get(cluster.clusterId) ?? [];
+            return (
+              <details key={cluster.clusterId} open className="rounded-2xl border border-slate-200 bg-slate-50 p-3 dark:border-mdn-dark-border dark:bg-[#202326]">
+                <summary className="cursor-pointer text-sm font-semibold text-slate-900 dark:text-mdn-dark-text">
+                  <span className="inline-flex items-center gap-2">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: clusterColor(cluster.clusterId, clusters) }} />
+                    {cluster.clusterId} · {bucket.length} Submission{bucket.length === 1 ? "" : "s"}
+                  </span>
+                </summary>
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  {bucket.map((point, index) => (
+                    <button
+                      key={`${point.submissionId}-${index}`}
+                      type="button"
+                      onClick={() => onSelect(point)}
+                      className={`rounded-xl px-3 py-2 text-left text-xs transition ${
+                        selectedId === point.submissionId
+                          ? "bg-slate-950 text-white dark:bg-mdn-dark-text dark:text-mdn-dark-bg"
+                          : "bg-white text-slate-700 hover:bg-slate-100 dark:bg-[#18191b] dark:text-mdn-dark-muted dark:hover:bg-[#2a2d30]"
+                      }`}
+                    >
+                      <div className="font-semibold">{deepDiveLabel(point)}</div>
+                      <div className="mt-0.5 opacity-70">{point.submissionId}</div>
+                    </button>
+                  ))}
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-dashed border-slate-250 bg-slate-25 p-6 text-sm text-slate-500 dark:border-mdn-dark-border dark:bg-[#202326] dark:text-mdn-dark-muted">
+          Keine Submissions für diese Filter.
+        </div>
+      )}
+      <JsonDisclosure
+        title="Fokus-Buckets als JSON"
+        data={{
+          view: "deep_dive_focus_cluster_buckets",
+          clusters: ordered.map((cluster) => ({
+            clusterId: cluster.clusterId,
+            submissions: (grouped.get(cluster.clusterId) ?? []).map(pointJson),
+          })),
+        }}
+      />
+    </Card>
+  );
+}
+
+function DeepDiveSubmissionTable({
+  points,
+  selectedId,
+  selectedPoint,
+  neighborRows,
+  onSelect,
+}: {
+  points: DriftProjectionPoint[];
+  selectedId: string | null;
+  selectedPoint: DriftProjectionPoint | null;
+  neighborRows: DriftNeighbor[];
+  onSelect: (point: DriftProjectionPoint) => void;
+}) {
+  const neighborRank = new Map(neighborRows.map((neighbor, index) => [neighbor.submissionId, index + 1]));
+  return (
+    <Card
+      title="Submission-Liste mit Nachbarschaft"
+      eyebrow="Deep Dive"
+      description="Die Tabelle zeigt die sichtbaren Submissions mit Position, Cluster und Markierung, ob sie nächste Nachbarn der aktuellen Auswahl sind."
+    >
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-mdn-dark-border">
+        <div className="max-h-[620px] overflow-auto">
+          <table className="docs-table min-w-[1040px]">
+            <thead className="sticky top-0 z-10 bg-white dark:bg-[#202326]">
+              <tr>
+                <th>Submission</th>
+                <th>Jahr</th>
+                <th>Cluster</th>
+                <th>x</th>
+                <th>y</th>
+                <th>Randwert</th>
+                <th>Nachbarschaft</th>
+              </tr>
+            </thead>
+            <tbody>
+              {points.map((point, index) => {
+                const rank = neighborRank.get(point.submissionId);
+                return (
+                  <tr
+                    key={`${point.submissionId}-${point.year}-${point.clusterId}-${index}`}
+                    className={selectedId === point.submissionId ? "bg-slate-50 dark:bg-[#202326]" : undefined}
+                  >
+                    <td>
+                      <button
+                        type="button"
+                        onClick={() => onSelect(point)}
+                        className="break-all text-left font-semibold text-slate-950 underline-offset-2 hover:underline dark:text-mdn-dark-text"
+                      >
+                        {deepDiveLabel(point)}
+                      </button>
+                      <div className="mt-1 break-all text-[11px] text-slate-500 dark:text-mdn-dark-muted">
+                        {point.submissionId}
+                      </div>
+                    </td>
+                    <td className="tabular-nums">{point.year}</td>
+                    <td>
+                      <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold dark:bg-[#2a2d30]">
+                        {point.clusterId}
+                      </span>
+                    </td>
+                    <td className="tabular-nums">{point.x.toFixed(4)}</td>
+                    <td className="tabular-nums">{point.y.toFixed(4)}</td>
+                    <td className="tabular-nums">{(point.outlierScore ?? 0).toFixed(3)}</td>
+                    <td>
+                      {selectedPoint?.submissionId === point.submissionId ? (
+                        <span className="rounded-full bg-slate-950 px-2.5 py-1 text-xs font-semibold text-white dark:bg-mdn-dark-text dark:text-mdn-dark-bg">
+                          Auswahl
+                        </span>
+                      ) : rank ? (
+                        <span className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold text-slate-700 dark:bg-[#2a2d30] dark:text-mdn-dark-muted">
+                          Nachbar #{rank}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-slate-400 dark:text-mdn-dark-muted">-</span>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!points.length ? (
+                <tr>
+                  <td colSpan={7} className="text-sm text-slate-500 dark:text-mdn-dark-muted">
+                    Keine Submissions für diese Filter.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <JsonDisclosure
+        title="Deep-Dive-Tabelle als JSON"
+        data={{
+          view: "deep_dive_submission_table",
+          selected: selectedPoint ? pointJson(selectedPoint) : null,
+          neighborRows: neighborRows.map((neighbor) => ({
+            submissionId: neighbor.submissionId,
+            year: neighbor.year,
+            clusterId: neighbor.clusterId,
+            similarity: roundNumber(neighbor.similarity),
+          })),
+          submissions: points.map(pointJson),
+        }}
+      />
+    </Card>
+  );
+}
+
+function deepDiveLabel(point: DriftProjectionPoint) {
+  const value = point.label && point.label !== point.submissionId ? point.label : point.submissionId;
+  return truncateLabel(value, 36);
+}
+
+function truncateLabel(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, Math.max(0, maxLength - 1))}…`;
+}
+
 export function DriftLegend({
   title,
   items,
