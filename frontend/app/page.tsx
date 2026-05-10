@@ -27,7 +27,7 @@ export default function Page() {
   const [assignmentName, setAssignmentName] = useState("Assignment MVP Demo");
   const [bundle, setBundle] = useState<File | null>(null);
   const [activeEngine, setActiveEngine] = useState<EngineKey>("engine1");
-  const [embeddingModel, setEmbeddingModel] = useState<EmbeddingModelName>("qwen3-embedding:4b");
+  const [embeddingModel, setEmbeddingModel] = useState<EmbeddingModelName>("qwen3-embedding:0.6b");
   const activeSpaces = ENGINE_SPACES[activeEngine];
   const [assignmentId, setAssignmentId] = useState<string | null>(null);
   const [uploadId, setUploadId] = useState<string | null>(null);

@@ -3,10 +3,11 @@ from __future__ import annotations
 import heapq
 import math
 import shutil
+import time
 from collections import Counter, defaultdict
 from io import BytesIO
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 from zipfile import BadZipFile, ZipFile
 
 import numpy as np
@@ -31,6 +32,96 @@ DRIFT_ARTIFACTS = {
     "year_similarity_matrix": "year_similarity_matrix.json",
     "neighbors": "neighbors.json",
 }
+
+
+def _initial_run_progress(created_at: str) -> dict[str, Any]:
+    return {
+        "stage": "queued",
+        "stageLabel": "Wartet",
+        "message": "Drift-Run wurde angelegt.",
+        "current": 0,
+        "total": 0,
+        "percent": 0,
+        "heartbeatAt": created_at,
+        "updatedAt": created_at,
+        "currentSubmissionId": None,
+        "cache": {"requests": 0, "hits": 0, "misses": 0, "stale": 0, "writes": 0, "bypassed": 0},
+        "events": [{"at": created_at, "stage": "queued", "message": "Drift-Run wurde angelegt."}],
+    }
+
+
+def _stage_label(stage: str) -> str:
+    return {
+        "queued": "Wartet",
+        "ingestion": "Submissions laden",
+        "normalization": "Code normalisieren",
+        "embeddings": "Embeddings berechnen",
+        "projection": "2D-Projektion",
+        "cluster": "Cluster berechnen",
+        "yearStats": "Jahrgänge auswerten",
+        "neighbors": "Nachbarschaften berechnen",
+        "artifacts": "Artefakte schreiben",
+        "published": "Fertig",
+        "failed": "Fehler",
+    }.get(stage, stage)
+
+
+class _RunProgressReporter:
+    def __init__(self, run_path: Path, run_payload: dict[str, Any], *, min_interval_seconds: float = 1.5) -> None:
+        self.run_path = run_path
+        self.run_payload = run_payload
+        self.min_interval_seconds = min_interval_seconds
+        self._last_write = 0.0
+
+    def update(
+        self,
+        *,
+        stage: str | None = None,
+        message: str | None = None,
+        current: int | None = None,
+        total: int | None = None,
+        current_submission_id: str | None = None,
+        cache: dict[str, Any] | None = None,
+        force: bool = False,
+        event: bool = False,
+    ) -> None:
+        now = time.monotonic()
+        if not force and now - self._last_write < self.min_interval_seconds:
+            return
+        timestamp = now_iso()
+        progress = dict(self.run_payload.get("progress") or _initial_run_progress(timestamp))
+        if stage is not None:
+            progress["stage"] = stage
+            progress["stageLabel"] = _stage_label(stage)
+        if message is not None:
+            progress["message"] = message
+        if current is not None:
+            progress["current"] = int(current)
+        if total is not None:
+            progress["total"] = int(total)
+        progress_total = int(progress.get("total") or 0)
+        progress_current = int(progress.get("current") or 0)
+        progress["percent"] = int(round((progress_current / progress_total) * 100)) if progress_total > 0 else 0
+        progress["heartbeatAt"] = timestamp
+        progress["updatedAt"] = timestamp
+        if current_submission_id is not None:
+            progress["currentSubmissionId"] = current_submission_id
+        if cache is not None:
+            progress["cache"] = {
+                "requests": int(cache.get("requests", 0)),
+                "hits": int(cache.get("hits", 0)),
+                "misses": int(cache.get("misses", 0)),
+                "stale": int(cache.get("stale", 0)),
+                "writes": int(cache.get("writes", 0)),
+                "bypassed": int(cache.get("bypassed", 0)),
+            }
+        events = list(progress.get("events") or [])
+        if event or force or stage is not None:
+            events.append({"at": timestamp, "stage": progress.get("stage"), "message": progress.get("message")})
+            progress["events"] = events[-8:]
+        self.run_payload["progress"] = progress
+        atomic_write_json(self.run_path, self.run_payload)
+        self._last_write = now
 
 
 def drift_root() -> Path:
@@ -271,6 +362,26 @@ def _extract_valid_drift_submission_archives(bundle_bytes: bytes) -> list[tuple[
     return rows
 
 
+def _drift_submission_id(*, year: int, bundle_id: str, archive_hash: str, archive_path: str, archive_index: int) -> str:
+    # A content hash alone is not unique enough for drift runs: the same student ZIP can
+    # appear twice in the same year, in duplicate uploads, or in different nested folders.
+    # The UI and nearest-neighbor artifacts need one stable unique point id per bundle entry.
+    location_hash = sha256_bytes(f"{bundle_id}|{archive_path}|{archive_index}".encode("utf-8"))[:8]
+    return f"sub_{int(year)}_{archive_hash[:12]}_{location_hash}"
+
+
+def _ensure_unique_submission_id(candidate: str, seen: set[str]) -> str:
+    if candidate not in seen:
+        seen.add(candidate)
+        return candidate
+    suffix = 2
+    while f"{candidate}_{suffix}" in seen:
+        suffix += 1
+    unique = f"{candidate}_{suffix}"
+    seen.add(unique)
+    return unique
+
+
 def _count_relevant_java_files_in_zip(archive_bytes: bytes) -> int:
     try:
         with ZipFile(BytesIO(archive_bytes)) as submission_zip:
@@ -283,7 +394,7 @@ def _count_relevant_java_files_in_zip(archive_bytes: bytes) -> int:
         return -1
 
 
-def create_drift_run(assignment_key: str, embedding_model: str | None = None, top_k: int | None = None) -> dict[str, Any]:
+def create_drift_run(assignment_key: str, embedding_model: str | None = None, top_k: int | None = None, force_recompute: bool = False) -> dict[str, Any]:
     assignment_key = _safe_assignment_key(assignment_key)
     root = assignment_dir_for_key(assignment_key)
     bundles = read_json(root / "bundles.json", default=[]) or []
@@ -302,11 +413,14 @@ def create_drift_run(assignment_key: str, embedding_model: str | None = None, to
         "embeddingModel": model,
         "embeddingModelProfile": profile_for_model(model),
         "topK": int(top_k or max(settings.knn_k, 6)),
+        "forceRecompute": bool(force_recompute),
+        "cachePolicy": "bypass_embedding_cache" if force_recompute else "use_embedding_cache",
         "createdAt": created_at,
         "startedAt": None,
         "finishedAt": None,
         "pipelineStatus": {
             "ingestion": "pending",
+            "normalization": "pending",
             "embeddings": "pending",
             "projection": "pending",
             "cluster": "pending",
@@ -314,6 +428,7 @@ def create_drift_run(assignment_key: str, embedding_model: str | None = None, to
             "neighbors": "pending",
             "artifacts": "pending",
         },
+        "progress": _initial_run_progress(created_at),
     }
     atomic_write_json(run_dir / "run.json", run_payload)
     return run_payload
@@ -330,15 +445,28 @@ def process_drift_run(assignment_key: str, run_id: str) -> None:
 
     run_payload["status"] = "running"
     run_payload["startedAt"] = now_iso()
-    atomic_write_json(run_path, run_payload)
+    reporter = _RunProgressReporter(run_path, run_payload)
+    reporter.update(stage="ingestion", message="Submissions werden aus den gespeicherten Bundles geladen.", current=0, total=0, force=True, event=True)
 
     try:
         run_payload["pipelineStatus"]["ingestion"] = "running"
-        atomic_write_json(run_path, run_payload)
-        submission_results = _load_or_ingest_drift_submissions(root=root, assignment_key=assignment_key)
+        reporter.update(stage="ingestion", message="Submissions werden aus den gespeicherten Bundles geladen.", force=True)
+        submission_results = _load_or_ingest_drift_submissions(
+            root=root,
+            assignment_key=assignment_key,
+            progress=lambda payload: reporter.update(stage="ingestion", **payload),
+        )
         run_payload["pipelineStatus"]["ingestion"] = "done"
-        run_payload["pipelineStatus"]["embeddings"] = "running"
-        atomic_write_json(run_path, run_payload)
+        run_payload["pipelineStatus"]["normalization"] = "running"
+        run_payload["pipelineStatus"]["embeddings"] = "pending"
+        reporter.update(
+            stage="normalization",
+            message=f"{len(submission_results)} Submissions werden normalisiert und für Embeddings vorbereitet.",
+            current=0,
+            total=len(submission_results),
+            force=True,
+            event=True,
+        )
 
         vectors, vector_rows, embedding_meta = _build_drift_vectors(
             root=root,
@@ -346,22 +474,25 @@ def process_drift_run(assignment_key: str, run_id: str) -> None:
             assignment_key=assignment_key,
             submission_results=submission_results,
             embedding_model=run_payload.get("embeddingModel"),
+            force_recompute=bool(run_payload.get("forceRecompute")),
+            progress=lambda payload: reporter.update(**payload),
         )
+        run_payload["pipelineStatus"]["normalization"] = "done"
         run_payload["pipelineStatus"]["embeddings"] = "done"
         run_payload["pipelineStatus"]["projection"] = "running"
-        atomic_write_json(run_path, run_payload)
+        reporter.update(stage="projection", message="2D-Projektion wird berechnet.", current=0, total=1, force=True, event=True)
 
         projection_xy = _project_vectors(vectors)
         run_payload["pipelineStatus"]["projection"] = "done"
         run_payload["pipelineStatus"]["cluster"] = "running"
-        atomic_write_json(run_path, run_payload)
+        reporter.update(stage="cluster", message="Robuste Lösungsmuster werden geclustert.", current=0, total=1, force=True, event=True)
 
         labels = _cluster_vectors(vectors)
         cluster_ids = _cluster_id_map(labels)
         outlier_scores = _outlier_scores(vectors, labels)
         run_payload["pipelineStatus"]["cluster"] = "done"
         run_payload["pipelineStatus"]["yearStats"] = "running"
-        atomic_write_json(run_path, run_payload)
+        reporter.update(stage="yearStats", message="Jahrgangs-Centroids und Verteilungen werden berechnet.", current=0, total=1, force=True, event=True)
 
         artifacts = _build_artifacts(
             assignment_key=assignment_key,
@@ -376,14 +507,16 @@ def process_drift_run(assignment_key: str, run_id: str) -> None:
             outlier_scores=outlier_scores,
             embedding_meta=embedding_meta,
             top_k=int(run_payload.get("topK") or 6),
+            progress=lambda payload: reporter.update(**payload),
         )
         run_payload["pipelineStatus"]["yearStats"] = "done"
         run_payload["pipelineStatus"]["neighbors"] = "done"
         run_payload["pipelineStatus"]["artifacts"] = "running"
-        atomic_write_json(run_path, run_payload)
+        reporter.update(stage="artifacts", message="Drift-Artefakte werden gespeichert.", current=0, total=len(DRIFT_ARTIFACTS) + 1, force=True, event=True)
 
-        for key, filename in DRIFT_ARTIFACTS.items():
+        for index, (key, filename) in enumerate(DRIFT_ARTIFACTS.items(), start=1):
             atomic_write_json(run_dir / filename, artifacts[key])
+            reporter.update(stage="artifacts", message=f"Artefakt {filename} gespeichert.", current=index, total=len(DRIFT_ARTIFACTS) + 1)
         atomic_write_json(run_dir / "vectors.json", {"assignmentKey": assignment_key, "runId": run_id, "items": vector_rows})
 
         latest_payload = {"assignmentKey": assignment_key, "runId": run_id, "publishedAt": now_iso()}
@@ -391,37 +524,269 @@ def process_drift_run(assignment_key: str, run_id: str) -> None:
         run_payload["status"] = "published"
         run_payload["finishedAt"] = now_iso()
         run_payload["pipelineStatus"]["artifacts"] = "done"
+        reporter.update(stage="published", message="Drift-Dashboard ist fertig.", current=len(DRIFT_ARTIFACTS) + 1, total=len(DRIFT_ARTIFACTS) + 1, force=True, event=True)
         atomic_write_json(run_path, run_payload)
     except Exception as exc:  # pragma: no cover
         run_payload["status"] = "failed"
         run_payload["finishedAt"] = now_iso()
         run_payload["error"] = str(exc)
+        reporter.update(stage="failed", message=str(exc), force=True, event=True)
         atomic_write_json(run_path, run_payload)
         atomic_write_json(run_dir / "errors.json", {"message": str(exc)})
 
 
-def latest_drift_run(assignment_key: str | None = None) -> dict[str, Any]:
+def get_drift_run(run_id: str) -> dict[str, Any]:
+    run_dir = _find_drift_run_dir(run_id)
+    run = read_json(run_dir / "run.json", default=None)
+    if not run:
+        raise FileNotFoundError("Drift-Run nicht gefunden.")
+    return run
+
+
+def latest_drift_run(assignment_key: str | None = None, embedding_model: str | None = None) -> dict[str, Any]:
+    normalized_model = normalize_embedding_model(embedding_model) if embedding_model else None
+    run_files = _drift_run_files(assignment_key)
+    runs = []
+    for run_file in run_files:
+        run = read_json(run_file, default=None)
+        if not run:
+            continue
+        if normalized_model and run.get("embeddingModel") != normalized_model:
+            continue
+        runs.append((run_file, run))
+    if not runs:
+        raise FileNotFoundError("Kein Drift-Run für diesen assignmentKey und dieses Modell vorhanden." if assignment_key else "Noch kein Drift-Run vorhanden.")
+    runs.sort(key=lambda item: _run_sort_key(item[0], item[1]), reverse=True)
+    return runs[0][1]
+
+
+
+def create_drift_workspace_runs(
+    *,
+    embedding_model: str | None = None,
+    top_k: int | None = None,
+    force_recompute: bool = False,
+    assignment_keys: str | None = None,
+) -> dict[str, Any]:
+    """Create one Drift run per assignmentKey without mixing labs.
+
+    The workspace view is intentionally a batch launcher over independent lab
+    runs. Each assignmentKey keeps its own vector space; the overview endpoint
+    later compares only the centroid movement metrics from the published runs.
+    """
+    normalized_model = normalize_embedding_model(embedding_model or settings.ollama_embed_model)
+    if assignment_keys:
+        requested_keys = [
+            _safe_assignment_key(item)
+            for item in assignment_keys.replace("\n", ",").split(",")
+            if item.strip()
+        ]
+        seen: set[str] = set()
+        candidate_keys = []
+        for key in requested_keys:
+            if key not in seen:
+                candidate_keys.append(key)
+                seen.add(key)
+    else:
+        candidate_keys = [str(item.get("assignmentKey")) for item in list_drift_assignments() if item.get("assignmentKey")]
+
+    runs: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for assignment_key in sorted(set(candidate_keys)):
+        try:
+            root = assignment_dir_for_key(assignment_key)
+            bundles = read_json(root / "bundles.json", default=[]) or []
+            valid_count = sum(int(item.get("validSubmissionZipCount") or 0) for item in bundles)
+            year_count = len({int(item.get("year")) for item in bundles if item.get("year") is not None})
+            if valid_count <= 0:
+                skipped.append({"assignmentKey": assignment_key, "reason": "no_valid_submission_zips"})
+                continue
+            if year_count < 2:
+                skipped.append({"assignmentKey": assignment_key, "reason": "needs_at_least_two_years"})
+                continue
+            runs.append(create_drift_run(
+                assignment_key=assignment_key,
+                embedding_model=normalized_model,
+                top_k=top_k,
+                force_recompute=force_recompute,
+            ))
+        except FileNotFoundError as exc:
+            skipped.append({"assignmentKey": assignment_key, "reason": str(exc)})
+        except ValueError as exc:
+            skipped.append({"assignmentKey": assignment_key, "reason": str(exc)})
+
+    return {
+        "embeddingModel": normalized_model,
+        "cachePolicy": "bypass_embedding_cache" if force_recompute else "use_embedding_cache",
+        "runCount": len(runs),
+        "runs": runs,
+        "skipped": skipped,
+        "createdAt": now_iso(),
+    }
+
+
+def drift_workspace_overview(embedding_model: str | None = None) -> dict[str, Any]:
+    normalized_model = normalize_embedding_model(embedding_model) if embedding_model else None
+    assignments = list_drift_assignments()
+    labs: list[dict[str, Any]] = []
+    missing: list[dict[str, Any]] = []
+
+    for assignment in assignments:
+        assignment_key = assignment.get("assignmentKey")
+        if not assignment_key:
+            continue
+        try:
+            run_file, run = _latest_published_run_for_assignment(str(assignment_key), normalized_model)
+            run_dir = run_file.parent
+            overview = read_json(run_dir / "overview.json", default=None)
+            year_stats = read_json(run_dir / "year_stats.json", default=None)
+            similarity_matrix = read_json(run_dir / "year_similarity_matrix.json", default=None)
+            clusters = read_json(run_dir / "clusters.json", default=None)
+            if not overview or not year_stats or not similarity_matrix:
+                missing.append({"assignmentKey": assignment_key, "reason": "published_run_without_complete_artifacts"})
+                continue
+            labs.append(
+                _workspace_lab_row(
+                    assignment_key=str(assignment_key),
+                    run=run,
+                    overview=overview,
+                    year_stats=year_stats,
+                    similarity_matrix=similarity_matrix,
+                    clusters=clusters or {"clusters": []},
+                )
+            )
+        except FileNotFoundError:
+            missing.append({"assignmentKey": assignment_key, "reason": "no_published_run_for_model" if normalized_model else "no_published_run"})
+
+    transitions = sorted({transition["transition"] for lab in labs for transition in lab.get("transitions", [])})
+    years = sorted({int(year) for lab in labs for year in lab.get("includedYears", [])})
+    labs.sort(key=lambda item: item.get("assignmentKey", ""))
+    return {
+        "embeddingModel": normalized_model,
+        "labCount": len(labs),
+        "totalSubmissions": sum(int(lab.get("totalSubmissions") or 0) for lab in labs),
+        "years": years,
+        "transitions": transitions,
+        "labs": labs,
+        "missingAssignments": missing,
+        "generatedAt": now_iso(),
+    }
+
+
+def _latest_published_run_for_assignment(assignment_key: str, embedding_model: str | None = None) -> tuple[Path, dict[str, Any]]:
+    run_files = _drift_run_files(assignment_key)
+    rows: list[tuple[Path, dict[str, Any]]] = []
+    for run_file in run_files:
+        run = read_json(run_file, default=None)
+        if not run or run.get("status") != "published":
+            continue
+        if embedding_model and run.get("embeddingModel") != embedding_model:
+            continue
+        rows.append((run_file, run))
+    if not rows:
+        raise FileNotFoundError("Kein veröffentlichter Drift-Run vorhanden.")
+    rows.sort(key=lambda item: _run_sort_key(item[0], item[1]), reverse=True)
+    return rows[0]
+
+
+def _workspace_lab_row(*, assignment_key: str, run: dict[str, Any], overview: dict[str, Any], year_stats: dict[str, Any], similarity_matrix: dict[str, Any], clusters: dict[str, Any]) -> dict[str, Any]:
+    year_rows = sorted(year_stats.get("years") or [], key=lambda item: int(item.get("year") or 0))
+    centroids = [
+        {
+            "year": int(item.get("year")),
+            "x": round(float(item.get("centroidX") or 0.0), 6),
+            "y": round(float(item.get("centroidY") or 0.0), 6),
+            "submissionCount": int(item.get("submissionCount") or 0),
+            "outlierCount": int(item.get("outlierCount") or 0),
+        }
+        for item in year_rows
+        if item.get("year") is not None
+    ]
+    similarities = _similarity_lookup(similarity_matrix)
+    raw_transitions: list[dict[str, Any]] = []
+    for left, right in zip(centroids, centroids[1:]):
+        dx = float(right["x"]) - float(left["x"])
+        dy = float(right["y"]) - float(left["y"])
+        distance = math.sqrt(dx * dx + dy * dy)
+        similarity = similarities.get((int(left["year"]), int(right["year"])))
+        raw_transitions.append({
+            "fromYear": int(left["year"]),
+            "toYear": int(right["year"]),
+            "transition": f'{int(left["year"])}→{int(right["year"])}',
+            "distance2d": round(float(distance), 6),
+            "similarity": round(float(similarity), 6) if similarity is not None else None,
+            "dissimilarity": round(float(1.0 - similarity), 6) if similarity is not None else None,
+        })
+    max_distance = max((float(item["distance2d"]) for item in raw_transitions), default=0.0)
+    transitions = [
+        {
+            **item,
+            "normalizedDistance": round((float(item["distance2d"]) / max_distance) if max_distance > 1e-12 else 0.0, 6),
+        }
+        for item in raw_transitions
+    ]
+    first = centroids[0] if centroids else None
+    last = centroids[-1] if centroids else None
+    total_drift = 0.0
+    if first and last:
+        total_drift = math.sqrt((float(last["x"]) - float(first["x"])) ** 2 + (float(last["y"]) - float(first["y"])) ** 2)
+    max_jump = max(transitions, key=lambda item: float(item.get("distance2d") or 0.0), default=None)
+    adjacent_similarities = [float(item["similarity"]) for item in transitions if item.get("similarity") is not None]
+    return {
+        "assignmentKey": assignment_key,
+        "runId": run.get("runId") or overview.get("runId"),
+        "embeddingModel": overview.get("embeddingModel") or run.get("embeddingModel"),
+        "includedYears": [int(year) for year in overview.get("includedYears") or []],
+        "totalSubmissions": int(overview.get("totalSubmissions") or 0),
+        "submissionsPerYear": overview.get("submissionsPerYear") or {},
+        "clusterCount": int(overview.get("clusterCount") or 0),
+        "boundaryPointCount": int(overview.get("outlierCount") or 0),
+        "centroids": centroids,
+        "transitions": transitions,
+        "pathLength": round(sum(float(item.get("distance2d") or 0.0) for item in transitions), 6),
+        "totalDrift": round(float(total_drift), 6),
+        "maxJump": round(float(max_jump.get("distance2d") if max_jump else 0.0), 6),
+        "maxJumpTransition": max_jump.get("transition") if max_jump else None,
+        "meanAdjacentSimilarity": round(sum(adjacent_similarities) / len(adjacent_similarities), 6) if adjacent_similarities else None,
+        "clusterIds": [cluster.get("clusterId") for cluster in clusters.get("clusters") or [] if cluster.get("clusterId")],
+        "createdAt": overview.get("createdAt") or run.get("finishedAt") or run.get("createdAt"),
+    }
+
+
+def _similarity_lookup(matrix_payload: dict[str, Any]) -> dict[tuple[int, int], float]:
+    years = [int(year) for year in matrix_payload.get("years") or []]
+    matrix = matrix_payload.get("matrix") or []
+    result: dict[tuple[int, int], float] = {}
+    for y_index, row in enumerate(matrix):
+        if y_index >= len(years):
+            continue
+        for x_index, value in enumerate(row):
+            if x_index >= len(years):
+                continue
+            try:
+                result[(years[y_index], years[x_index])] = float(value)
+            except (TypeError, ValueError):
+                continue
+    return result
+
+def _drift_run_files(assignment_key: str | None = None) -> list[Path]:
+    assignments_root = drift_root() / "assignments"
     if assignment_key:
         root = assignment_dir_for_key(_safe_assignment_key(assignment_key))
-        latest = read_json(root / "latest_run.json", default=None)
-        if latest:
-            run = read_json(root / "runs" / latest["runId"] / "run.json", default=None)
-            if run:
-                return run
-        run_files = sorted((root / "runs").glob("*/run.json"), key=lambda path: path.stat().st_mtime, reverse=True) if (root / "runs").exists() else []
-        if run_files:
-            return read_json(run_files[0])
-        raise FileNotFoundError("Kein Drift-Run für diesen assignmentKey vorhanden.")
+        runs_root = root / "runs"
+        return list(runs_root.glob("*/run.json")) if runs_root.exists() else []
+    if not assignments_root.exists():
+        return []
+    return list(assignments_root.glob("*/runs/*/run.json"))
 
-    candidates = sorted((drift_root() / "assignments").glob("*/latest_run.json"), key=lambda path: path.stat().st_mtime, reverse=True) if (drift_root() / "assignments").exists() else []
-    for latest_path in candidates:
-        latest = read_json(latest_path, default=None)
-        if latest:
-            run = read_json(latest_path.parent / "runs" / latest["runId"] / "run.json", default=None)
-            if run:
-                return run
-    raise FileNotFoundError("Noch kein Drift-Run vorhanden.")
 
+def _run_sort_key(path: Path, run: dict[str, Any]) -> tuple[str, float]:
+    timestamp = run.get("createdAt") or run.get("startedAt") or run.get("finishedAt") or ""
+    try:
+        mtime = path.stat().st_mtime
+    except FileNotFoundError:
+        mtime = 0.0
+    return (str(timestamp), float(mtime))
 
 def drift_run_artifacts(run_id: str) -> dict[str, Any]:
     run_dir = _find_drift_run_dir(run_id)
@@ -442,26 +807,37 @@ def _find_drift_run_dir(run_id: str) -> Path:
     raise FileNotFoundError("Drift-Run nicht gefunden.")
 
 
-def _load_or_ingest_drift_submissions(*, root: Path, assignment_key: str) -> list[dict[str, Any]]:
+def _load_or_ingest_drift_submissions(*, root: Path, assignment_key: str, progress: Callable[[dict[str, Any]], None] | None = None) -> list[dict[str, Any]]:
     bundles = read_json(root / "bundles.json", default=[]) or []
     if not bundles:
         raise BundleError("Keine Drift-Bundles vorhanden.")
     submissions_root = root / "submissions"
     submissions_root.mkdir(parents=True, exist_ok=True)
     results: list[dict[str, Any]] = []
+    seen_submission_ids: set[str] = set()
+    total_archives = sum(int(bundle.get("validSubmissionZipCount") or 0) for bundle in bundles)
+    processed_archives = 0
 
     for bundle in bundles:
         bundle_dir = root / "bundles" / bundle["bundleId"]
         bundle_bytes = (bundle_dir / "bundle.zip").read_bytes()
         archives = _extract_valid_drift_submission_archives(bundle_bytes)
+        if progress:
+            progress({
+                "message": f"Jahrgang {bundle.get('year')} wird geladen: {len(archives)} Student-ZIPs.",
+                "current": processed_archives,
+                "total": total_archives,
+            })
         for index, (submission_name, archive_bytes, archive_filename, archive_path) in enumerate(archives, start=1):
             archive_hash = sha256_bytes(archive_bytes)
-            base_id = f"sub_{int(bundle['year'])}_{archive_hash[:12]}"
-            submission_id = base_id
-            if (submissions_root / submission_id / "submission.json").exists():
-                existing = read_json(submissions_root / submission_id / "submission.json", default={}) or {}
-                if existing.get("source_zip_sha256") != archive_hash or existing.get("drift_bundle_id") != bundle["bundleId"]:
-                    submission_id = f"{base_id}_{index}"
+            base_id = _drift_submission_id(
+                year=int(bundle["year"]),
+                bundle_id=str(bundle["bundleId"]),
+                archive_hash=archive_hash,
+                archive_path=str(archive_path),
+                archive_index=index,
+            )
+            submission_id = _ensure_unique_submission_id(base_id, seen_submission_ids)
             submission_dir = submissions_root / submission_id
             submission_json = submission_dir / "submission.json"
 
@@ -529,6 +905,14 @@ def _load_or_ingest_drift_submissions(*, root: Path, assignment_key: str) -> lis
                     "submission_dir": str(submission_dir),
                 }
             )
+            processed_archives += 1
+            if progress:
+                progress({
+                    "message": f"Submission {processed_archives}/{total_archives} geladen.",
+                    "current": processed_archives,
+                    "total": total_archives,
+                    "current_submission_id": submission_id,
+                })
     if not results:
         raise BundleError("Keine Submission-ZIPs mit .java-Dateien vorhanden.")
     return results
@@ -559,16 +943,100 @@ def _build_drift_vectors(
     assignment_key: str,
     submission_results: list[dict[str, Any]],
     embedding_model: str | None,
+    force_recompute: bool = False,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> tuple[np.ndarray, list[dict[str, Any]], dict[str, Any]]:
     client = OllamaEmbeddingClient(model=embedding_model)
-    rows: list[dict[str, Any]] = []
-    vectors: list[np.ndarray] = []
-    for result in submission_results:
+    cache_stats = {
+        "requests": 0,
+        "hits": 0,
+        "misses": 0,
+        "stale": 0,
+        "writes": 0,
+        "bypassed": 0,
+        "model": client.model,
+        "mode": "bypass" if force_recompute else "reuse",
+    }
+    prepared: list[tuple[dict[str, Any], Path, list[dict[str, Any]]]] = []
+    total_submissions = len(submission_results)
+    for index, result in enumerate(submission_results, start=1):
         submission = result["submission"]
         submission_dir = Path(result["submission_dir"])
         chunks = _normalized_submission_chunks(result=result, submission_dir=submission_dir)
+        prepared.append((result, submission_dir, chunks))
+        if progress:
+            progress({
+                "stage": "normalization",
+                "message": f"Code normalisiert: {index}/{total_submissions} Submissions.",
+                "current": index,
+                "total": total_submissions,
+                "current_submission_id": submission.get("submission_id"),
+            })
+
+    total_chunks = sum(len(chunks) for _, _, chunks in prepared)
+    if progress:
+        progress({
+            "stage": "embeddings",
+            "message": (
+                f"Embeddings werden mit {client.model} frisch über Ollama berechnet; der Embedding-Cache wird für diesen Run ignoriert."
+                if force_recompute
+                else f"Embeddings werden mit {client.model} berechnet oder aus dem Cache geladen."
+            ),
+            "current": 0,
+            "total": max(total_chunks, 1),
+            "cache": cache_stats,
+            "force": True,
+            "event": True,
+        })
+
+    rows: list[dict[str, Any]] = []
+    vectors: list[np.ndarray] = []
+    embedded_chunks = 0
+    for result, _submission_dir, chunks in prepared:
+        submission = result["submission"]
+        submission_id = submission["submission_id"]
         if chunks:
-            chunk_vectors = [_cached_embed(client, chunk["text"]) for chunk in chunks]
+            chunk_vectors = []
+            for chunk in chunks:
+                if progress:
+                    progress({
+                        "stage": "embeddings",
+                        "message": f"Ollama/Cache verarbeitet Chunk {embedded_chunks + 1}/{total_chunks}.",
+                        "current": embedded_chunks,
+                        "total": total_chunks,
+                        "current_submission_id": submission_id,
+                        "cache": cache_stats,
+                    })
+                chunk_vectors.append(
+                    _cached_embed(
+                        client,
+                        chunk["text"],
+                        cache_stats=cache_stats,
+                        force_recompute=force_recompute,
+                        progress=(
+                            lambda payload, sid=submission_id, done=embedded_chunks: progress({
+                                **payload,
+                                "stage": "embeddings",
+                                "current_submission_id": sid,
+                                "current": done,
+                                "total": total_chunks,
+                                "cache": cache_stats,
+                            })
+                        )
+                        if progress
+                        else None,
+                    )
+                )
+                embedded_chunks += 1
+                if progress:
+                    progress({
+                        "stage": "embeddings",
+                        "message": f"Embedding-Chunk {embedded_chunks}/{total_chunks} fertig.",
+                        "current": embedded_chunks,
+                        "total": total_chunks,
+                        "current_submission_id": submission_id,
+                        "cache": cache_stats,
+                    })
             vector = _weighted_average_vectors(chunk_vectors, [chunk["weight"] for chunk in chunks])
         else:
             vector = np.zeros(1, dtype=float)
@@ -578,8 +1046,8 @@ def _build_drift_vectors(
             {
                 "assignmentKey": assignment_key,
                 "year": int(submission.get("year")),
-                "submissionId": submission["submission_id"],
-                "submissionName": submission.get("submission_name", submission["submission_id"]),
+                "submissionId": submission_id,
+                "submissionName": submission.get("submission_name", submission_id),
                 "vector": [round(float(value), 8) for value in vector.tolist()],
                 "embeddingModel": client.model,
                 "embeddingDimension": int(vector.shape[0]),
@@ -593,7 +1061,10 @@ def _build_drift_vectors(
         "modelProfile": client.model_profile,
         "baseUrl": client.base_url,
         "dimension": int(matrix.shape[1]) if matrix.ndim == 2 else 0,
-        "cache": "chunk_sha256_by_model",
+        "cache": "chunk_sha256_by_model_and_text_v2",
+        "cachePolicy": "bypass_embedding_cache" if force_recompute else "use_embedding_cache",
+        "forceRecompute": bool(force_recompute),
+        "cacheStats": cache_stats,
     }
     atomic_write_json(run_dir / "embedding_meta.json", embedding_meta)
     return matrix, rows, embedding_meta
@@ -623,26 +1094,77 @@ def _normalized_submission_chunks(*, result: dict[str, Any], submission_dir: Pat
     return chunks[: settings.embedding_max_chunks_per_submission]
 
 
-def _cached_embed(client: OllamaEmbeddingClient, text: str) -> np.ndarray:
+def _cached_embed(
+    client: OllamaEmbeddingClient,
+    text: str,
+    cache_stats: dict[str, Any] | None = None,
+    force_recompute: bool = False,
+    progress: Callable[[dict[str, Any]], None] | None = None,
+) -> np.ndarray:
     model_slug = slugify(client.model)
-    key = sha256_bytes(f"{client.model}\n{text}".encode("utf-8"))
+    text_hash = sha256_bytes(text.encode("utf-8"))
+    key = sha256_bytes(f"drift-cache-v2\nmodel={client.model}\ntext={text_hash}".encode("utf-8"))
     cache_path = settings.data_root / "embedding-cache" / model_slug / f"{key}.json"
-    cached = read_json(cache_path, default=None)
-    if cached and isinstance(cached.get("vector"), list):
+    if cache_stats is not None:
+        for key_name in ("requests", "hits", "misses", "stale", "writes", "bypassed"):
+            cache_stats.setdefault(key_name, 0)
+        cache_stats["requests"] = int(cache_stats.get("requests", 0)) + 1
+
+    cached = None if force_recompute else read_json(cache_path, default=None)
+    if force_recompute:
+        if cache_stats is not None:
+            cache_stats["bypassed"] = int(cache_stats.get("bypassed", 0)) + 1
+            cache_stats["misses"] = int(cache_stats.get("misses", 0)) + 1
+        if progress:
+            progress({"message": f"Cache umgangen: Ollama berechnet einen Chunk mit {client.model} neu.", "cache": cache_stats})
+    elif _valid_cached_embedding(cached, model=client.model, text_hash=text_hash):
+        if cache_stats is not None:
+            cache_stats["hits"] = int(cache_stats.get("hits", 0)) + 1
+        if progress:
+            progress({"message": "Cache-Hit: Embedding-Chunk wurde lokal geladen.", "cache": cache_stats})
         return np.asarray(cached["vector"], dtype=float)
+    else:
+        if cached is not None and cache_stats is not None:
+            cache_stats["stale"] = int(cache_stats.get("stale", 0)) + 1
+        if cache_stats is not None:
+            cache_stats["misses"] = int(cache_stats.get("misses", 0)) + 1
+        if progress:
+            progress({"message": f"Cache-Miss: Ollama berechnet einen Chunk mit {client.model}.", "cache": cache_stats})
+
     vector = client.embed_one(text)
+    vector = np.asarray(vector, dtype=float)
     atomic_write_json(
         cache_path,
         {
+            "schemaVersion": 2,
             "model": client.model,
             "modelProfile": client.model_profile,
-            "textSha256": sha256_bytes(text.encode("utf-8")),
+            "textSha256": text_hash,
             "dimension": int(vector.shape[0]),
             "vector": [float(value) for value in vector.tolist()],
             "createdAt": now_iso(),
+            "refreshedByForceRun": bool(force_recompute),
         },
     )
+    if cache_stats is not None:
+        cache_stats["writes"] = int(cache_stats.get("writes", 0)) + 1
     return vector
+
+
+def _valid_cached_embedding(cached: Any, *, model: str, text_hash: str) -> bool:
+    if not isinstance(cached, dict):
+        return False
+    vector = cached.get("vector")
+    if not isinstance(vector, list) or not vector:
+        return False
+    if cached.get("model") != model:
+        return False
+    if cached.get("textSha256") != text_hash:
+        return False
+    dimension = cached.get("dimension")
+    if not isinstance(dimension, int) or dimension != len(vector):
+        return False
+    return all(isinstance(value, (int, float)) and math.isfinite(float(value)) for value in vector)
 
 
 def _pad_vectors(vectors: list[np.ndarray]) -> np.ndarray:
@@ -783,6 +1305,7 @@ def _build_artifacts(
     outlier_scores: np.ndarray,
     embedding_meta: dict[str, Any],
     top_k: int,
+    progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     years = sorted({int(row["year"]) for row in vector_rows})
     year_shape = {year: YEAR_SHAPES[index % len(YEAR_SHAPES)] for index, year in enumerate(years)}
@@ -805,10 +1328,20 @@ def _build_artifacts(
             }
         )
 
-    neighbors = _top_k_neighbors(vectors=vectors, rows=vector_rows, labels=labels, cluster_ids=cluster_ids, top_k=top_k)
+    if progress:
+        progress({"stage": "neighbors", "message": "Top-k-Nachbarschaften werden berechnet.", "current": 0, "total": max(1, len(vector_rows)), "force": True, "event": True})
+    neighbors = _top_k_neighbors(vectors=vectors, rows=vector_rows, labels=labels, cluster_ids=cluster_ids, top_k=top_k, progress=progress)
+    if progress:
+        progress({"stage": "yearStats", "message": "Cluster-Zusammenfassungen werden erzeugt.", "current": 0, "total": 3, "force": True, "event": True})
     clusters = _cluster_artifacts(points=points, vectors=vectors, labels=labels, cluster_ids=cluster_ids, years=years)
+    if progress:
+        progress({"stage": "yearStats", "message": "Jahrgangsstatistiken werden erzeugt.", "current": 1, "total": 3})
     year_stats = _year_stats(points=points, vectors=vectors, labels=labels, cluster_ids=cluster_ids, years=years)
+    if progress:
+        progress({"stage": "yearStats", "message": "Jahrgangsähnlichkeiten werden erzeugt.", "current": 2, "total": 3})
     similarity_matrix = _year_similarity_matrix(vectors=vectors, rows=vector_rows, years=years)
+    if progress:
+        progress({"stage": "yearStats", "message": "Jahrgangsauswertung fertig.", "current": 3, "total": 3, "force": True})
     outlier_count = sum(1 for point in points if float(point.get("outlierScore", 0.0)) >= 0.9)
 
     overview = {
@@ -821,6 +1354,9 @@ def _build_artifacts(
         "outlierCount": outlier_count,
         "embeddingModel": embedding_meta.get("model"),
         "embeddingDimension": embedding_meta.get("dimension"),
+        "embeddingCacheStats": embedding_meta.get("cacheStats"),
+        "embeddingCacheMode": embedding_meta.get("cachePolicy"),
+        "forceRecompute": bool(embedding_meta.get("forceRecompute")),
         "createdAt": now_iso(),
         "driftSchemaVersion": DRIFT_SCHEMA_VERSION,
         "outlierDefinition": "points_with_outlierScore_at_least_0.9",
@@ -836,12 +1372,14 @@ def _build_artifacts(
     }
 
 
-def _top_k_neighbors(*, vectors: np.ndarray, rows: list[dict[str, Any]], labels: np.ndarray, cluster_ids: dict[int, str], top_k: int) -> dict[str, Any]:
+def _top_k_neighbors(*, vectors: np.ndarray, rows: list[dict[str, Any]], labels: np.ndarray, cluster_ids: dict[int, str], top_k: int, progress: Callable[[dict[str, Any]], None] | None = None) -> dict[str, Any]:
     n = vectors.shape[0]
     heaps: list[list[tuple[float, int]]] = [[] for _ in range(n)]
     block_size = 256
     for start in range(0, n, block_size):
         end = min(n, start + block_size)
+        if progress:
+            progress({"stage": "neighbors", "message": f"Nachbarschaftsblock {start + 1}–{end} von {n} wird berechnet.", "current": start, "total": max(1, n)})
         sims = vectors[start:end] @ vectors.T if vectors.size else np.zeros((end - start, n), dtype=float)
         for offset, row_sims in enumerate(sims):
             index = start + offset
@@ -872,6 +1410,8 @@ def _top_k_neighbors(*, vectors: np.ndarray, rows: list[dict[str, Any]], labels:
                 ],
             }
         )
+    if progress:
+        progress({"stage": "neighbors", "message": "Top-k-Nachbarschaften fertig.", "current": n, "total": max(1, n), "force": True})
     return {"metric": "cosine_similarity", "topK": top_k, "items": items}
 
 

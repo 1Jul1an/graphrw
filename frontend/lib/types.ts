@@ -209,6 +209,33 @@ export type DriftBundle = {
   manifest?: DriftBundleManifest;
 };
 
+export type DriftRunProgressEvent = {
+  at?: string;
+  stage?: string;
+  message?: string;
+};
+
+export type DriftRunProgress = {
+  stage?: string;
+  stageLabel?: string;
+  message?: string;
+  current?: number;
+  total?: number;
+  percent?: number;
+  heartbeatAt?: string;
+  updatedAt?: string;
+  currentSubmissionId?: string | null;
+  cache?: {
+    requests?: number;
+    hits?: number;
+    misses?: number;
+    stale?: number;
+    writes?: number;
+    bypassed?: number;
+  };
+  events?: DriftRunProgressEvent[];
+};
+
 export type DriftRunPayload = {
   runId: string;
   assignmentKey: string;
@@ -216,10 +243,13 @@ export type DriftRunPayload = {
   embeddingModel?: string;
   embeddingModelProfile?: string | null;
   topK?: number;
+  forceRecompute?: boolean;
+  cachePolicy?: string;
   createdAt?: string;
   startedAt?: string | null;
   finishedAt?: string | null;
   pipelineStatus?: Record<string, string>;
+  progress?: DriftRunProgress;
   error?: string;
 };
 
@@ -233,6 +263,18 @@ export type DriftOverview = {
   outlierCount: number;
   embeddingModel: string;
   embeddingDimension?: number;
+  embeddingCacheStats?: {
+    requests?: number;
+    hits?: number;
+    misses?: number;
+    stale?: number;
+    writes?: number;
+    bypassed?: number;
+    mode?: string;
+    model?: string;
+  };
+  embeddingCacheMode?: string;
+  forceRecompute?: boolean;
   createdAt: string;
   driftSchemaVersion?: number;
   outlierDefinition?: string;
@@ -312,4 +354,63 @@ export type DriftArtifacts = {
   year_stats: DriftYearStats;
   year_similarity_matrix: DriftYearSimilarityMatrix;
   neighbors?: DriftNeighbors;
+};
+
+export type DriftWorkspaceRunBatch = {
+  embeddingModel: string;
+  cachePolicy?: string;
+  runCount: number;
+  runs: DriftRunPayload[];
+  skipped?: { assignmentKey: string; reason: string }[];
+  createdAt?: string;
+};
+
+
+export type DriftWorkspaceCentroid = {
+  year: number;
+  x: number;
+  y: number;
+  submissionCount: number;
+  outlierCount?: number;
+};
+
+export type DriftWorkspaceTransition = {
+  fromYear: number;
+  toYear: number;
+  transition: string;
+  distance2d: number;
+  normalizedDistance: number;
+  similarity?: number | null;
+  dissimilarity?: number | null;
+};
+
+export type DriftWorkspaceLab = {
+  assignmentKey: string;
+  runId?: string;
+  embeddingModel?: string;
+  includedYears: number[];
+  totalSubmissions: number;
+  submissionsPerYear: Record<string, number>;
+  clusterCount: number;
+  boundaryPointCount: number;
+  centroids: DriftWorkspaceCentroid[];
+  transitions: DriftWorkspaceTransition[];
+  pathLength: number;
+  totalDrift: number;
+  maxJump: number;
+  maxJumpTransition?: string | null;
+  meanAdjacentSimilarity?: number | null;
+  clusterIds?: string[];
+  createdAt?: string;
+};
+
+export type DriftWorkspaceOverview = {
+  embeddingModel?: string | null;
+  labCount: number;
+  totalSubmissions: number;
+  years: number[];
+  transitions: string[];
+  labs: DriftWorkspaceLab[];
+  missingAssignments?: { assignmentKey: string; reason: string }[];
+  generatedAt: string;
 };

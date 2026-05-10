@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Card } from "../Card";
 import type {
   DriftCluster,
@@ -11,6 +11,8 @@ import type {
   DriftProjectionPoint,
   DriftYearSimilarityMatrix,
   DriftYearStats,
+  DriftWorkspaceOverview,
+  DriftWorkspaceLab,
 } from "../../lib/types";
 
 const YEAR_COLORS = [
@@ -50,7 +52,268 @@ type MapProps = {
   neighborIds?: Set<string>;
 };
 
+
+
+export function DriftWorkspaceOverviewCards({ workspace }: { workspace: DriftWorkspaceOverview }) {
+  const values = [
+    { label: "Labs", value: String(workspace.labCount) },
+    { label: "Submissions", value: String(workspace.totalSubmissions) },
+    { label: "Jahrgänge", value: workspace.years.join(", ") || "-" },
+    { label: "Jahresübergänge", value: workspace.transitions.join(", ") || "-" },
+    { label: "Embedding-Modell", value: workspace.embeddingModel || "alle Modelle" },
+  ];
+  return (
+    <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+      {values.map((item) => (
+        <div key={item.label} className="docs-card p-5">
+          <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-500 dark:text-mdn-dark-muted">
+            {item.label}
+          </div>
+          <div className="mt-2 break-words text-2xl font-semibold tracking-[-0.03em] text-slate-950 dark:text-mdn-dark-text">
+            {item.value}
+          </div>
+        </div>
+      ))}
+    </section>
+  );
+}
+
+export function DriftWorkspaceTransitionHeatmap({ workspace }: { workspace: DriftWorkspaceOverview }) {
+  const labs = workspace.labs;
+  const transitions = workspace.transitions;
+  return (
+    <Card
+      title="Drift pro Lab und Jahresübergang"
+      eyebrow="Lab-Vergleich"
+      description="Jedes Lab wird aus seinem eigenen Drift-Run gelesen. Die Zellen zeigen den normierten Centroid-Sprung innerhalb dieses Labs."
+    >
+      {!labs.length ? (
+        <EmptyWorkspaceMessage />
+      ) : (
+        <div className="overflow-x-auto">
+          <div
+            className="min-w-[860px] rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]"
+            style={{
+              display: "grid",
+              gridTemplateColumns: `minmax(180px, 1.2fr) repeat(${Math.max(1, transitions.length)}, minmax(110px, 1fr))`,
+              gap: "8px",
+            }}
+          >
+            <div className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+              assignmentKey
+            </div>
+            {transitions.map((transition) => (
+              <div key={transition} className="text-center text-xs font-semibold tabular-nums text-slate-600 dark:text-mdn-dark-muted">
+                {transition}
+              </div>
+            ))}
+            {labs.map((lab) => (
+              <FragmentRow key={lab.assignmentKey}>
+                <div className="flex items-center rounded-xl bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-900 dark:bg-[#18191b] dark:text-mdn-dark-text">
+                  {lab.assignmentKey}
+                </div>
+                {transitions.map((transition) => {
+                  const item = lab.transitions.find((row) => row.transition === transition);
+                  const value = item?.normalizedDistance ?? null;
+                  const label = item
+                    ? `${item.distance2d.toFixed(3)} · sim ${item.similarity == null ? "-" : item.similarity.toFixed(3)}`
+                    : "-";
+                  return (
+                    <div
+                      key={`${lab.assignmentKey}-${transition}`}
+                      className="flex min-h-[58px] items-center justify-center rounded-xl text-center text-xs font-semibold tabular-nums shadow-sm"
+                      style={{
+                        backgroundColor: value === null ? "transparent" : heatColor(value, 0, 1),
+                        color: value === null ? undefined : heatTextColor(heatRatio(value, 0, 1)),
+                        border: value === null ? "1px dashed rgba(148, 163, 184, 0.45)" : undefined,
+                      }}
+                      title={item ? `${lab.assignmentKey} · ${transition}: Distanz ${item.distance2d.toFixed(4)}, normiert ${item.normalizedDistance.toFixed(3)}` : `${lab.assignmentKey} · ${transition}: keine Daten`}
+                    >
+                      {label}
+                    </div>
+                  );
+                })}
+              </FragmentRow>
+            ))}
+          </div>
+        </div>
+      )}
+      <div className="mt-4 flex flex-wrap items-center gap-3 text-xs text-slate-500 dark:text-mdn-dark-muted">
+        <span>kleiner Sprung</span>
+        <span className="h-3 w-40 rounded-full" style={{ background: "linear-gradient(90deg, #dbeafe, #1d4ed8)" }} />
+        <span>größter Sprung im Lab</span>
+      </div>
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "workspace_lab_transition_heatmap",
+          embeddingModel: workspace.embeddingModel,
+          transitions: workspace.transitions,
+          labs: workspace.labs.map((lab) => ({
+            assignmentKey: lab.assignmentKey,
+            transitions: lab.transitions,
+          })),
+        }}
+      />
+    </Card>
+  );
+}
+
+export function DriftWorkspaceCentroidSmallMultiples({ workspace }: { workspace: DriftWorkspaceOverview }) {
+  const labs = workspace.labs;
+  return (
+    <Card
+      title="Jahrgangs-Centroid-Drift pro Lab"
+      eyebrow="Zeitlinien"
+      description="Jede Karte zeigt die Bewegung der Jahrgangszentren innerhalb eines Labs. Die Achsen werden pro Lab skaliert."
+    >
+      {!labs.length ? (
+        <EmptyWorkspaceMessage />
+      ) : (
+        <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+          {labs.map((lab) => (
+            <LabCentroidMiniChart key={lab.assignmentKey} lab={lab} allYears={workspace.years} />
+          ))}
+        </div>
+      )}
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "workspace_centroid_small_multiples",
+          labs: workspace.labs.map((lab) => ({
+            assignmentKey: lab.assignmentKey,
+            centroids: lab.centroids,
+            totalDrift: lab.totalDrift,
+            pathLength: lab.pathLength,
+            maxJump: lab.maxJump,
+            maxJumpTransition: lab.maxJumpTransition,
+          })),
+        }}
+      />
+    </Card>
+  );
+}
+
+export function DriftWorkspaceSummaryTable({ workspace }: { workspace: DriftWorkspaceOverview }) {
+  const rows = [...workspace.labs].sort((a, b) => b.maxJump - a.maxJump || b.totalDrift - a.totalDrift || a.assignmentKey.localeCompare(b.assignmentKey));
+  return (
+    <Card
+      title="Lab Drift Summary"
+      eyebrow="Vergleich"
+      description="Diese Tabelle fasst pro Lab den Pfad der Jahrgangszentren zusammen. Große Sprünge markieren starke Veränderungen zwischen zwei Jahrgängen."
+    >
+      {!rows.length ? (
+        <EmptyWorkspaceMessage />
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="docs-table min-w-[980px]">
+            <thead>
+              <tr>
+                <th>assignmentKey</th>
+                <th>Jahrgänge</th>
+                <th>Submissions</th>
+                <th>Cluster</th>
+                <th>Randpunkte</th>
+                <th>Gesamtdrift</th>
+                <th>Pfadlänge</th>
+                <th>Größter Sprung</th>
+                <th>Ø Ähnlichkeit</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((lab) => (
+                <tr key={lab.assignmentKey}>
+                  <td className="font-semibold text-slate-950 dark:text-mdn-dark-text">{lab.assignmentKey}</td>
+                  <td>{lab.includedYears.join(", ")}</td>
+                  <td className="tabular-nums">{lab.totalSubmissions}</td>
+                  <td className="tabular-nums">{lab.clusterCount}</td>
+                  <td className="tabular-nums">{lab.boundaryPointCount}</td>
+                  <td className="tabular-nums">{lab.totalDrift.toFixed(4)}</td>
+                  <td className="tabular-nums">{lab.pathLength.toFixed(4)}</td>
+                  <td>
+                    <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold dark:bg-[#2a2d30]">
+                      {lab.maxJumpTransition ?? "-"} · {lab.maxJump.toFixed(4)}
+                    </span>
+                  </td>
+                  <td className="tabular-nums">{lab.meanAdjacentSimilarity == null ? "-" : lab.meanAdjacentSimilarity.toFixed(4)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {workspace.missingAssignments?.length ? (
+        <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+          <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+            Labs ohne veröffentlichte Artefakte
+          </summary>
+          <div className="mt-3 flex flex-wrap gap-2">
+            {workspace.missingAssignments.map((item) => (
+              <span key={`${item.assignmentKey}-${item.reason}`} className="rounded-full border border-slate-200 bg-white px-3 py-1.5 text-xs text-slate-600 dark:border-mdn-dark-border dark:bg-[#18191b] dark:text-mdn-dark-muted">
+                {item.assignmentKey} · {item.reason}
+              </span>
+            ))}
+          </div>
+        </details>
+      ) : null}
+      <JsonDisclosure
+        title="Daten dieser Tabelle als JSON"
+        data={{ view: "workspace_lab_drift_summary", ...workspace }}
+      />
+    </Card>
+  );
+}
+
+function EmptyWorkspaceMessage() {
+  return (
+    <div className="rounded-2xl border border-dashed border-slate-250 bg-slate-25 p-6 text-sm text-slate-500 dark:border-mdn-dark-border dark:bg-[#202326] dark:text-mdn-dark-muted">
+      Noch keine veröffentlichten Drift-Runs für diese Auswahl vorhanden.
+    </div>
+  );
+}
+
+function LabCentroidMiniChart({ lab, allYears }: { lab: DriftWorkspaceLab; allYears: number[] }) {
+  const width = 420;
+  const height = 260;
+  const margin = { top: 26, right: 26, bottom: 32, left: 36 };
+  const points = lab.centroids.map((point) => ({ x: point.x, y: point.y, year: point.year, submissionCount: point.submissionCount }));
+  const bounds = boundsFor(points);
+  const sx = (x: number) => scale(x, bounds.minX, bounds.maxX, margin.left, width - margin.right);
+  const sy = (y: number) => scale(y, bounds.minY, bounds.maxY, height - margin.bottom, margin.top);
+  const polyline = points.map((point) => `${sx(point.x)},${sy(point.y)}`).join(" ");
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <div className="font-semibold text-slate-950 dark:text-mdn-dark-text">{lab.assignmentKey}</div>
+          <div className="mt-1 text-xs text-slate-500 dark:text-mdn-dark-muted">
+            {lab.totalSubmissions} Submissions · größter Sprung {lab.maxJumpTransition ?? "-"}
+          </div>
+        </div>
+        <div className="rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold tabular-nums dark:bg-[#2a2d30]">
+          {lab.maxJump.toFixed(3)}
+        </div>
+      </div>
+      <svg viewBox={`0 0 ${width} ${height}`} className="w-full rounded-xl border border-slate-100 bg-slate-50 dark:border-mdn-dark-border dark:bg-[#18191b]">
+        <Grid width={width} height={height} margin={margin} />
+        <polyline points={polyline} fill="none" stroke="currentColor" strokeWidth={2} className="text-slate-400 dark:text-mdn-dark-muted" />
+        {points.map((point) => (
+          <g key={`${lab.assignmentKey}-${point.year}`}>
+            <circle cx={sx(point.x)} cy={sy(point.y)} r={7} fill={yearColor(point.year, allYears)} stroke="white" strokeWidth={2}>
+              <title>{`${lab.assignmentKey} · ${point.year}: (${point.x.toFixed(4)}, ${point.y.toFixed(4)}) · ${point.submissionCount} Submissions`}</title>
+            </circle>
+            <text x={sx(point.x) + 10} y={sy(point.y) - 8} className="fill-slate-700 text-[11px] font-semibold dark:fill-mdn-dark-text">
+              {point.year}
+            </text>
+          </g>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
 export function DriftOverviewCards({ overview }: { overview: DriftOverview }) {
+  const cache = overview.embeddingCacheStats;
   const values = [
     { label: "Assignment Key", value: overview.assignmentKey },
     { label: "Submissions", value: String(overview.totalSubmissions) },
@@ -58,7 +321,15 @@ export function DriftOverviewCards({ overview }: { overview: DriftOverview }) {
     { label: "Cluster", value: String(overview.clusterCount) },
     { label: "Randpunkte", value: String(overview.outlierCount) },
     { label: "Embedding-Modell", value: overview.embeddingModel || "-" },
-  ];
+    cache
+      ? {
+          label: "Embedding Cache",
+          value: overview.forceRecompute || overview.embeddingCacheMode === "bypass_embedding_cache"
+            ? `${cache.bypassed ?? 0} umgangen · ${cache.writes ?? 0} geschrieben`
+            : `${cache.hits ?? 0} Treffer · ${cache.misses ?? 0} neu`,
+        }
+      : null,
+  ].filter(Boolean) as { label: string; value: string }[];
   return (
     <section className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
       {values.map((item) => (
@@ -101,6 +372,14 @@ export function DriftEmbeddingMapByYear(props: MapProps) {
           shape: yearShapeForPoint(props.allPoints, year),
         }))}
       />
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "embedding_map_by_year",
+          pointCount: props.points.length,
+          points: props.points.map(pointJson),
+        }}
+      />
     </Card>
   );
 }
@@ -140,6 +419,14 @@ export function DriftEmbeddingMapByCluster(props: MapProps) {
           }))}
         />
       </div>
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "embedding_map_by_cluster",
+          pointCount: props.points.length,
+          points: props.points.map(pointJson),
+        }}
+      />
     </Card>
   );
 }
@@ -218,6 +505,17 @@ export function DriftClusterDistributionChart({
           color: clusterColor(cluster.clusterId, ordered),
         }))}
       />
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "cluster_distribution_by_year",
+          years: stats.years.map((yearStat) => ({
+            year: yearStat.year,
+            submissionCount: yearStat.submissionCount,
+            clusterDistribution: yearStat.clusterDistribution,
+          })),
+        }}
+      />
     </Card>
   );
 }
@@ -295,6 +593,10 @@ export function DriftCentroidTimelineChart({
           color: yearColor(year, years),
         }))}
       />
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{ view: "year_centroid_drift", centroids: points }}
+      />
     </Card>
   );
 }
@@ -365,6 +667,15 @@ export function DriftYearSimilarityHeatmap({
         />
         <span>hoch</span>
       </div>
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "year_similarity_matrix",
+          metric: matrix.metric,
+          years: matrix.years,
+          matrix: matrix.matrix,
+        }}
+      />
     </Card>
   );
 }
@@ -411,6 +722,17 @@ export function DriftOutlierChart({ stats }: { stats: DriftYearStats }) {
           y-Achse: Anzahl der Randpunkte.
         </div>
       </div>
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "boundary_points_by_year",
+          years: stats.years.map((yearStat) => ({
+            year: yearStat.year,
+            outlierCount: yearStat.outlierCount,
+            submissionCount: yearStat.submissionCount,
+          })),
+        }}
+      />
     </Card>
   );
 }
@@ -478,6 +800,22 @@ export function DriftClusterSummaryTable({
           </tbody>
         </table>
       </div>
+      <JsonDisclosure
+        title="Daten dieser Tabelle als JSON"
+        data={{
+          view: "cluster_summary",
+          clusters: ordered.map((cluster) => ({
+            clusterId: cluster.clusterId,
+            size: cluster.size,
+            dominantYear: cluster.dominantYear,
+            yearDistribution: cluster.yearDistribution,
+            status: clusterStatus(cluster),
+            centroidX: roundNumber(cluster.centroidX),
+            centroidY: roundNumber(cluster.centroidY),
+            exemplarSubmissions: cluster.exemplarSubmissions ?? [],
+          })),
+        }}
+      />
     </Card>
   );
 }
@@ -500,47 +838,286 @@ export function DriftSubmissionDetailPanel({
           Noch kein Punkt ausgewählt.
         </div>
       ) : (
-        <div className="grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
-          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
-            <dl className="space-y-3 text-sm">
-              <DetailRow label="submissionId" value={point.submissionId} />
-              <DetailRow label="year" value={String(point.year)} />
-              <DetailRow label="clusterId" value={point.clusterId} />
-              <DetailRow
-                label="Randwert"
-                value={(point.outlierScore ?? 0).toFixed(3)}
-              />
-            </dl>
-          </div>
-          <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
-            <div className="mb-3 text-sm font-semibold text-slate-900 dark:text-mdn-dark-text">
-              Nächste Nachbarn
+        <>
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.1fr)]">
+            <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+              <dl className="space-y-3 text-sm">
+                <DetailRow label="submissionId" value={point.submissionId} />
+                <DetailRow label="year" value={String(point.year)} />
+                <DetailRow label="clusterId" value={point.clusterId} />
+                <DetailRow label="Position" value={`(${point.x.toFixed(4)}, ${point.y.toFixed(4)})`} />
+                <DetailRow
+                  label="Randwert"
+                  value={(point.outlierScore ?? 0).toFixed(3)}
+                />
+              </dl>
             </div>
-            {neighbors?.length ? (
-              <div className="space-y-2">
-                {neighbors.map((neighbor) => (
-                  <div
-                    key={neighbor.submissionId}
-                    className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm dark:bg-[#2a2d30]"
-                  >
-                    <span className="font-medium text-slate-900 dark:text-mdn-dark-text">
-                      {neighbor.submissionId}
-                    </span>
-                    <span className="text-slate-600 dark:text-mdn-dark-muted">
-                      {neighbor.year} · {neighbor.clusterId} ·{" "}
-                      {neighbor.similarity.toFixed(3)}
-                    </span>
-                  </div>
-                ))}
+            <div className="rounded-2xl border border-slate-200 bg-white p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+              <div className="mb-3 text-sm font-semibold text-slate-900 dark:text-mdn-dark-text">
+                Nächste Nachbarn
               </div>
-            ) : (
-              <div className="text-sm text-slate-500 dark:text-mdn-dark-muted">
-                Keine Nachbarn gespeichert.
-              </div>
-            )}
+              {neighbors?.length ? (
+                <div className="space-y-2">
+                  {neighbors.map((neighbor, index) => (
+                    <div
+                      key={`${neighbor.submissionId}-${neighbor.year}-${neighbor.clusterId}-${index}`}
+                      className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2 text-sm dark:bg-[#2a2d30]"
+                    >
+                      <span className="font-medium text-slate-900 dark:text-mdn-dark-text">
+                        {neighbor.submissionId}
+                      </span>
+                      <span className="text-slate-600 dark:text-mdn-dark-muted">
+                        {neighbor.year} · {neighbor.clusterId} ·{" "}
+                        {neighbor.similarity.toFixed(3)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="text-sm text-slate-500 dark:text-mdn-dark-muted">
+                  Keine Nachbarn gespeichert.
+                </div>
+              )}
+            </div>
           </div>
-        </div>
+          <JsonDisclosure
+            title="Daten dieser Submission als JSON"
+            data={{
+              view: "submission_detail",
+              submission: pointJson(point),
+              neighbors: (neighbors ?? []).map((neighbor) => ({
+                submissionId: neighbor.submissionId,
+                year: neighbor.year,
+                clusterId: neighbor.clusterId,
+                similarity: roundNumber(neighbor.similarity),
+              })),
+            }}
+          />
+        </>
       )}
+    </Card>
+  );
+}
+
+
+export function DriftYearClusterSubmissionMatrix({
+  points,
+  years,
+  clusters,
+  selectedId,
+  onSelect,
+}: {
+  points: DriftProjectionPoint[];
+  years: number[];
+  clusters: DriftCluster[];
+  selectedId: string | null;
+  onSelect: (point: DriftProjectionPoint) => void;
+}) {
+  const ordered = orderedClusters(clusters);
+  const grouped = useMemo(() => {
+    const byKey = new Map<string, DriftProjectionPoint[]>();
+    for (const point of points) {
+      const key = `${point.year}::${point.clusterId}`;
+      const bucket = byKey.get(key) ?? [];
+      bucket.push(point);
+      byKey.set(key, bucket);
+    }
+    for (const bucket of byKey.values()) {
+      bucket.sort(compareProjectionPoints);
+    }
+    return byKey;
+  }, [points]);
+
+  return (
+    <Card
+      title="Submission-Matrix nach Jahrgang und Cluster"
+      eyebrow="Submission-Orte"
+      description="Diese Ansicht zeigt, welche Submission in welchem Jahrgang und Cluster liegt. Die Listen in den Zellen sind ausklappbar."
+    >
+      <div className="overflow-x-auto">
+        <table className="docs-table min-w-[900px]">
+          <thead>
+            <tr>
+              <th>Jahrgang</th>
+              {ordered.map((cluster) => (
+                <th key={cluster.clusterId}>
+                  <span className="inline-flex items-center gap-2">
+                    <span
+                      className="h-2.5 w-2.5 rounded-full"
+                      style={{ backgroundColor: clusterColor(cluster.clusterId, ordered) }}
+                    />
+                    {cluster.clusterId}
+                  </span>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {years.map((year) => (
+              <tr key={year}>
+                <td className="font-semibold tabular-nums text-slate-900 dark:text-mdn-dark-text">
+                  {year}
+                </td>
+                {ordered.map((cluster) => {
+                  const bucket = grouped.get(`${year}::${cluster.clusterId}`) ?? [];
+                  return (
+                    <td key={`${year}-${cluster.clusterId}`} className="align-top">
+                      {bucket.length ? (
+                        <details className="rounded-xl border border-slate-200 bg-slate-50 p-2 dark:border-mdn-dark-border dark:bg-[#202326]">
+                          <summary className="cursor-pointer text-xs font-semibold text-slate-700 dark:text-mdn-dark-text">
+                            {bucket.length} Submission{bucket.length === 1 ? "" : "s"}
+                          </summary>
+                          <div className="mt-2 max-h-48 space-y-1 overflow-auto pr-1">
+                            {bucket.map((point, index) => (
+                              <button
+                                key={`${point.submissionId}-${point.year}-${point.clusterId}-${index}`}
+                                type="button"
+                                onClick={() => onSelect(point)}
+                                className={`block w-full rounded-lg px-2 py-1 text-left text-[11px] transition ${
+                                  selectedId === point.submissionId
+                                    ? "bg-slate-950 text-white dark:bg-mdn-dark-text dark:text-mdn-dark-bg"
+                                    : "bg-white text-slate-700 hover:bg-slate-100 dark:bg-[#18191b] dark:text-mdn-dark-muted dark:hover:bg-[#2a2d30]"
+                                }`}
+                                title={`${point.submissionId} · x=${point.x.toFixed(3)} · y=${point.y.toFixed(3)}`}
+                              >
+                                <span className="font-semibold">{point.submissionId}</span>
+                                <span className="ml-1 opacity-70">
+                                  ({point.x.toFixed(3)}, {point.y.toFixed(3)})
+                                </span>
+                              </button>
+                            ))}
+                          </div>
+                        </details>
+                      ) : (
+                        <span className="text-xs text-slate-400 dark:text-mdn-dark-muted">-</span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <JsonDisclosure
+        title="Daten dieser Ansicht als JSON"
+        data={{
+          view: "submission_matrix_by_year_and_cluster",
+          years,
+          clusters: ordered.map((cluster) => cluster.clusterId),
+          cells: years.flatMap((year) =>
+            ordered.map((cluster) => {
+              const bucket = grouped.get(`${year}::${cluster.clusterId}`) ?? [];
+              return {
+                year,
+                clusterId: cluster.clusterId,
+                count: bucket.length,
+                submissions: bucket.map((point) => pointJson(point)),
+              };
+            }),
+          ),
+        }}
+      />
+    </Card>
+  );
+}
+
+export function DriftSubmissionExplorer({
+  points,
+  selectedId,
+  onSelect,
+}: {
+  points: DriftProjectionPoint[];
+  selectedId: string | null;
+  onSelect: (point: DriftProjectionPoint) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const rows = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return [...points]
+      .sort(compareProjectionPoints)
+      .filter((point) => {
+        if (!needle) return true;
+        return (
+          point.submissionId.toLowerCase().includes(needle) ||
+          String(point.year).includes(needle) ||
+          point.clusterId.toLowerCase().includes(needle)
+        );
+      });
+  }, [points, query]);
+
+  return (
+    <Card
+      title="Submission Explorer"
+      eyebrow="Punkte im Lösungsraum"
+      description="Diese Tabelle macht jeden Punkt explizit sichtbar: Submission, Jahrgang, Cluster und 2D-Position. Ein Klick wählt die Submission in den Maps aus."
+      actions={
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Submission, Jahrgang oder Cluster suchen"
+          className="w-72 max-w-full rounded-2xl border border-slate-250 bg-white px-4 py-2.5 text-xs outline-none transition focus:border-brand-300 dark:border-mdn-dark-border dark:bg-[#202326]"
+        />
+      }
+    >
+      <div className="overflow-x-auto rounded-2xl border border-slate-200 dark:border-mdn-dark-border">
+        <div className="max-h-[520px] overflow-auto">
+          <table className="docs-table min-w-[900px]">
+            <thead className="sticky top-0 z-10 bg-white dark:bg-[#202326]">
+              <tr>
+                <th>Submission</th>
+                <th>Jahrgang</th>
+                <th>Cluster</th>
+                <th>x</th>
+                <th>y</th>
+                <th>Randwert</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((point, index) => (
+                <tr
+                  key={`${point.submissionId}-${point.year}-${point.clusterId}-${index}`}
+                  className={selectedId === point.submissionId ? "bg-slate-50 dark:bg-[#202326]" : undefined}
+                >
+                  <td>
+                    <button
+                      type="button"
+                      onClick={() => onSelect(point)}
+                      className="break-all text-left font-semibold text-slate-950 underline-offset-2 hover:underline dark:text-mdn-dark-text"
+                    >
+                      {point.submissionId}
+                    </button>
+                  </td>
+                  <td className="tabular-nums">{point.year}</td>
+                  <td>
+                    <span className="inline-flex items-center gap-2 rounded-full bg-slate-100 px-2.5 py-1 text-xs font-semibold dark:bg-[#2a2d30]">
+                      {point.clusterId}
+                    </span>
+                  </td>
+                  <td className="tabular-nums">{point.x.toFixed(4)}</td>
+                  <td className="tabular-nums">{point.y.toFixed(4)}</td>
+                  <td className="tabular-nums">{(point.outlierScore ?? 0).toFixed(3)}</td>
+                </tr>
+              ))}
+              {!rows.length ? (
+                <tr>
+                  <td colSpan={6} className="text-sm text-slate-500 dark:text-mdn-dark-muted">
+                    Keine Submissions für diese Filter.
+                  </td>
+                </tr>
+              ) : null}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <JsonDisclosure
+        title="Daten dieser Tabelle als JSON"
+        data={{
+          view: "submission_explorer",
+          count: rows.length,
+          submissions: rows.map(pointJson),
+        }}
+      />
     </Card>
   );
 }
@@ -621,9 +1198,9 @@ function ScatterPlot({
         {showNeighbors && selected
           ? neighborPairs
               .filter((point) => point.submissionId !== selected.submissionId)
-              .map((point) => (
+              .map((point, index) => (
                 <line
-                  key={`${selected.submissionId}-${point.submissionId}`}
+                  key={`${selected.submissionId}-${point.submissionId}-${index}`}
                   x1={sx(selected.x)}
                   y1={sy(selected.y)}
                   x2={sx(point.x)}
@@ -635,7 +1212,7 @@ function ScatterPlot({
                 />
               ))
           : null}
-        {points.map((point) => {
+        {points.map((point, index) => {
           const isSelected = selectedId === point.submissionId;
           const isNeighbor = Boolean(
             showNeighbors && neighborIds?.has(point.submissionId),
@@ -646,7 +1223,7 @@ function ScatterPlot({
               : clusterColor(point.clusterId, clusters);
           return (
             <g
-              key={point.submissionId}
+              key={`${point.submissionId}-${point.year}-${point.clusterId}-${index}`}
               role="button"
               tabIndex={0}
               onClick={() => onSelect(point)}
@@ -860,6 +1437,70 @@ function Grid({
         className="text-slate-300 dark:text-mdn-dark-border"
       />
     </g>
+  );
+}
+
+
+function JsonDisclosure({ title, data }: { title: string; data: unknown }) {
+  const [copied, setCopied] = useState(false);
+  const json = useMemo(() => JSON.stringify(data, null, 2), [data]);
+
+  async function copyJson() {
+    try {
+      await navigator.clipboard.writeText(json);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  }
+
+  return (
+    <details className="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 dark:border-mdn-dark-border dark:bg-[#202326]">
+      <summary className="cursor-pointer text-xs font-semibold uppercase tracking-[0.14em] text-slate-500 dark:text-mdn-dark-muted">
+        {title}
+      </summary>
+      <div className="mt-3 flex items-center justify-between gap-3">
+        <div className="text-xs text-slate-500 dark:text-mdn-dark-muted">
+          Aufklappen, kopieren oder direkt markieren.
+        </div>
+        <button
+          type="button"
+          onClick={copyJson}
+          className="rounded-xl border border-slate-250 bg-white px-3 py-1.5 text-xs font-semibold text-slate-700 transition hover:bg-slate-100 dark:border-mdn-dark-border dark:bg-[#18191b] dark:text-mdn-dark-muted dark:hover:bg-[#2a2d30]"
+        >
+          {copied ? "Kopiert" : "JSON kopieren"}
+        </button>
+      </div>
+      <pre className="mt-3 max-h-[360px] overflow-auto rounded-xl bg-slate-950 p-4 text-xs leading-5 text-slate-50">
+        {json}
+      </pre>
+    </details>
+  );
+}
+
+function pointJson(point: DriftProjectionPoint) {
+  return {
+    submissionId: point.submissionId,
+    year: point.year,
+    clusterId: point.clusterId,
+    x: roundNumber(point.x),
+    y: roundNumber(point.y),
+    shapeKey: point.shapeKey,
+    label: point.label,
+    outlierScore: roundNumber(point.outlierScore ?? 0),
+  };
+}
+
+function roundNumber(value: number) {
+  return Number.isFinite(value) ? Number(value.toFixed(6)) : value;
+}
+
+function compareProjectionPoints(a: DriftProjectionPoint, b: DriftProjectionPoint) {
+  return (
+    a.year - b.year ||
+    a.clusterId.localeCompare(b.clusterId, undefined, { numeric: true }) ||
+    a.submissionId.localeCompare(b.submissionId)
   );
 }
 

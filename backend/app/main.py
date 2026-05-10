@@ -6,7 +6,7 @@ from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, 
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .drift import create_drift_run, delete_drift_bundle, drift_run_artifacts, import_drift_bundle, latest_drift_run, list_drift_assignments, list_drift_bundles, process_drift_run
+from .drift import create_drift_run, create_drift_workspace_runs, delete_drift_bundle, drift_run_artifacts, drift_workspace_overview, get_drift_run, import_drift_bundle, latest_drift_run, list_drift_assignments, list_drift_bundles, process_drift_run
 from .embedding_models import normalize_embedding_model
 from .engines import ENGINE2, normalize_engine
 from .ingestion import BundleError
@@ -72,9 +72,10 @@ def start_drift_run(
     assignment_key: str = Form(...),
     embedding_model: str | None = Form(default=None),
     top_k: int | None = Form(default=None),
+    force_recompute: bool = Form(default=False),
 ) -> dict[str, Any]:
     try:
-        run_payload = create_drift_run(assignment_key=assignment_key, embedding_model=embedding_model, top_k=top_k)
+        run_payload = create_drift_run(assignment_key=assignment_key, embedding_model=embedding_model, top_k=top_k, force_recompute=force_recompute)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except FileNotFoundError as exc:
@@ -83,10 +84,56 @@ def start_drift_run(
     return run_payload
 
 
-@app.get("/api/drift/runs/latest")
-def get_latest_drift_run(assignment_key: str | None = Query(default=None)) -> dict[str, Any]:
+
+
+@app.post("/api/drift/workspace/runs")
+def start_drift_workspace_runs(
+    background_tasks: BackgroundTasks,
+    embedding_model: str | None = Form(default=None),
+    top_k: int | None = Form(default=None),
+    force_recompute: bool = Form(default=False),
+    assignment_keys: str | None = Form(default=None),
+) -> dict[str, Any]:
     try:
-        return latest_drift_run(assignment_key)
+        payload = create_drift_workspace_runs(
+            embedding_model=embedding_model,
+            top_k=top_k,
+            force_recompute=force_recompute,
+            assignment_keys=assignment_keys,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    for run_payload in payload.get("runs", []):
+        background_tasks.add_task(process_drift_run, run_payload["assignmentKey"], run_payload["runId"])
+    return payload
+
+
+@app.get("/api/drift/workspace/overview")
+def get_drift_workspace_overview(
+    embedding_model: str | None = Query(default=None),
+) -> dict[str, Any]:
+    try:
+        return drift_workspace_overview(embedding_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+@app.get("/api/drift/runs/latest")
+def get_latest_drift_run(
+    assignment_key: str | None = Query(default=None),
+    embedding_model: str | None = Query(default=None),
+) -> dict[str, Any]:
+    try:
+        return latest_drift_run(assignment_key, embedding_model)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/drift/runs/{run_id}")
+def read_drift_run(run_id: str) -> dict[str, Any]:
+    try:
+        return get_drift_run(run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

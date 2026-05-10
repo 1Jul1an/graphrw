@@ -21,7 +21,7 @@ EMBEDDING_MODEL_OPTIONS: dict[str, dict[str, str]] = {
         "description": "Leichteste lokale Engine2-Option.",
     },
 }
-DEFAULT_EMBEDDING_MODEL_PROFILE: EmbeddingModelProfile = "balanced"
+DEFAULT_EMBEDDING_MODEL_PROFILE: EmbeddingModelProfile = "fast"
 DEFAULT_EMBEDDING_MODEL = EMBEDDING_MODEL_OPTIONS[DEFAULT_EMBEDDING_MODEL_PROFILE]["model"]
 ALLOWED_EMBEDDING_MODELS = tuple(option["model"] for option in EMBEDDING_MODEL_OPTIONS.values())
 

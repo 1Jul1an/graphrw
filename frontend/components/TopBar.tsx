@@ -23,7 +23,7 @@ export function TopBar({ activeEngine, activeSpace, run }: Props) {
               Workspace
             </Link>
             <Link href="/drift" className="rounded-full px-3 py-1.5 transition hover:bg-slate-100 hover:text-slate-950 dark:hover:bg-[#2a2d30] dark:hover:text-mdn-dark-text">
-              Drift
+              Drift-Workspace
             </Link>
           </nav>
         </div>
