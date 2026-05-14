@@ -408,13 +408,15 @@ def _split_text(text: str, max_chars: int) -> list[str]:
 
 
 def _embedding_document_text(relative_path: str, source: str) -> str:
-    return (
-        "Represent this Java source file for semantic code similarity and solution-strategy comparison.\n"
-        f"File: {relative_path}\n"
-        "```java\n"
-        f"{source}\n"
-        "```"
-    )
+    """Return the exact semantic payload sent to the embedding model.
+
+    Keep this intentionally minimal: the embedding vector should represent the
+    submitted code, not archive layout, filenames, prompt text, markdown fences,
+    or other metadata. ``relative_path`` is retained only for caller/API
+    compatibility and must not be embedded.
+    """
+    _ = relative_path
+    return source.strip()
 
 
 def _weighted_average_vectors(vectors: list[np.ndarray], weights: list[float]) -> np.ndarray:
